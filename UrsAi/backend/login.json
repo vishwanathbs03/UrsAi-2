@@ -1,0 +1,1 @@
+{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyIiwiaWF0IjoxNzg0MzA2NTk4LCJleHAiOjE3ODQzMTAxOTh9.G5KyGqB9hcnJeSkVaTzgVUhydp9kan6aP_BIqEbhIOU","token_type":"bearer","expires_in":3600,"user":{"id":2,"full_name":"Cookie User","email":"cookie@example.com","is_active":true,"created_at":"2026-07-17T16:43:12","updated_at":"2026-07-17T16:43:12"}}

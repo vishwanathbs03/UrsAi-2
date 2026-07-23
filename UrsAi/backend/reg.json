@@ -1,0 +1,1 @@
+{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1NSIsImlhdCI6MTc4NDYyMjMyMiwiZXhwIjoxNzg0NjI1OTIyfQ.XzEVyMKTRUFq64gcKxVuoTBdo3W13FHgOoF6qMYXr_Q","token_type":"bearer","expires_in":3600,"user":{"id":55,"full_name":"Verify","email":"verify-1784622322@example-test.com","is_active":true,"created_at":"2026-07-21T08:25:22","updated_at":"2026-07-21T08:25:22"}}
