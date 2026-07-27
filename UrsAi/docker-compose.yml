@@ -1,0 +1,111 @@
+# =============================================================================
+# Atlas AI — local / staging compose.
+#
+# Three services:
+#   - backend   : FastAPI on gunicorn+uvicorn, port 8000 (internal)
+#   - frontend  : Next.js standalone server, port 3000 (internal)
+#   - nginx     : public reverse proxy on host port 8080
+#
+# The browser hits http://localhost:8080 only. nginx routes /api/* to
+# the backend and everything else to the frontend.
+#
+# The SQLite database lives in a named volume that the backend mounts
+# read-write. No external database container is started — the brief
+# explicitly says "use the existing configured database", and the
+# existing app boots from atlas_ai.db on first connect.
+#
+# Run:    docker compose up --build
+# Stop:   docker compose down
+# Logs:   docker compose logs -f
+# =============================================================================
+
+name: atlas-ai
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: atlas-ai/backend:dev
+    container_name: atlas-ai-backend
+    restart: unless-stopped
+    env_file:
+      - ./deployment/env/.env.staging.example
+    environment:
+      APP_ENV: staging
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      LOG_LEVEL: INFO
+    volumes:
+      - backend-data:/var/lib/atlas-ai
+      - backend-logs:/var/log/atlas-ai
+    networks:
+      - atlas-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8080/api/v1
+        NEXT_PUBLIC_APP_NAME: Atlas AI
+        NEXT_PUBLIC_APP_URL: http://localhost:8080
+    image: atlas-ai/frontend:dev
+    container_name: atlas-ai-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    networks:
+      - atlas-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: atlas-ai-nginx
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    ports:
+      - "18080:80"
+    volumes:
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-logs:/var/log/nginx
+    networks:
+      - atlas-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  atlas-net:
+    driver: bridge
+
+volumes:
+  backend-data:
+    driver: local
+  backend-logs:
+    driver: local
+  nginx-logs:
+    driver: local

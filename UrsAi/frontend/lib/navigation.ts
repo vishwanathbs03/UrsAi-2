@@ -1,4 +1,4 @@
-import { Home, LayoutDashboard, Building2, KanbanSquare, Sparkles } from "lucide-react";
+import { Home, LayoutDashboard, Building2, KanbanSquare, Sparkles, BarChart3, FileText, Lightbulb, Bell, TrendingUp, Bot, Compass } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface NavLink {
@@ -16,7 +16,14 @@ export interface NavLink {
 export const mainNavLinks: NavLink[] = [
   { href: "/", label: "Home", icon: Home },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/predictive-analytics", label: "Predictive Analytics", icon: TrendingUp },
   { href: "/action-board", label: "Action Board", icon: KanbanSquare },
+  { href: "/insights", label: "Insights", icon: Lightbulb },
+  { href: "/assistant", label: "AI Assistant", icon: Bot },
+  { href: "/advisor", label: "Advisor", icon: Compass },
+  { href: "/notifications", label: "Notifications", icon: Bell },
+  { href: "/reports", label: "Reports", icon: FileText },
   { href: "/business", label: "Business", icon: Building2 },
 ];
 

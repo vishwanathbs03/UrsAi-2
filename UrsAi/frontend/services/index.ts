@@ -19,3 +19,16 @@ export { scoresService } from "./scores-service";
 export { dnaService } from "./dna-service";
 export { rulesService } from "./rules-service";
 export { decisionService } from "./decision-service";
+export { recommendationsService } from "./recommendations-service";
+export { roadmapService } from "./roadmap-service";
+export { twinService } from "./twin-service";
+export {
+  chatService,
+  type ChatMessageOut,
+  type ChatMessageAppendResponse,
+  type ChatSessionDetail,
+  type ChatSessionSummary,
+  type ChatSource,
+} from "./chat-service";
+
+export { advisorService } from "./advisor-service";

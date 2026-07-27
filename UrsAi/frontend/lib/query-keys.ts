@@ -19,4 +19,11 @@ export const queryKeys = {
   // "Refresh" button which invalidates everything at once.
   dashboardAll: () => ["business", "dashboard"] as const,
   actionBoardAll: () => ["business", "action-board"] as const,
+  // Analytics page payloads.
+  twin: () => ["business", "twin"] as const,
+  roadmap: () => ["business", "roadmap"] as const,
+  recommendations: () => ["business", "recommendations"] as const,
+  analyticsAll: () => ["business", "analytics"] as const,
+  // Advisor (Sprint 7 Part 5).
+  advisor: () => ["business", "advisor"] as const,
 };

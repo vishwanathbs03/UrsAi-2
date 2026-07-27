@@ -14,3 +14,10 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]==3.3.0
 email-validator==2.2.0
+
+# --- OCR (multipart upload support, transitively required by FastAPI) ---
+# Required at import time by the OCR endpoint's `File(...)` / `UploadFile`
+# form-data parameters. Not a feature change; just pins the version the
+# dev venv was using so the production image boots without surprise
+# missing-dep failures.
+python-multipart==0.0.20

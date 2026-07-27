@@ -1,0 +1,45 @@
+# =============================================================================
+# Frontend .dockerignore
+#
+# Excludes everything the production image does not need: dev tooling,
+# editor noise, the standalone build output, and the local dev artifacts.
+# =============================================================================
+
+# Build output
+.next/
+out/
+node_modules/
+*.tsbuildinfo
+next-env.d.ts
+
+# Environment (compose injects these at runtime)
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tests
+coverage/
+playwright-report/
+test-results/
+
+# Git
+.git/
+.gitignore
+.github/
+README.md
+
+# Misc
+.cache/
+.parcel-cache/

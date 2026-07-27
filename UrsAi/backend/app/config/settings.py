@@ -41,9 +41,25 @@ class Settings(BaseSettings):
     )
     database_echo: bool = False
 
-    # AI (placeholder, not used in this milestone)
+    # AI provider layer (Sprint 7 Part 2).
+    # AI_PROVIDER selects the provider to use at runtime:
+    #   "ollama"     - real Ollama HTTP provider (requires OLLAMA_BASE_URL
+    #                  reachable); falls back to deterministic locally when
+    #                  the upstream is unreachable
+    #   "placeholder" / "disabled" / any other value
+    #                - no real provider; the layer still works because the
+    #                  factory returns the deterministic fallback
     ai_provider: str = "placeholder"
     ai_api_key: str = ""
+
+    # Ollama-specific. Both default to the Ollama-documented values.
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
+    # Per-request timeout, seconds. Ollama cold-start on a small CPU box
+    # can easily exceed 30s for the first call; 60s is a pragmatic
+    # compromise between "give the model room" and "do not block the API
+    # forever". Override per environment if you have a GPU.
+    ai_request_timeout_seconds: float = 60.0
 
     # Authentication (Sprint 1 Part 3)
     jwt_secret_key: str = "change-me"

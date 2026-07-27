@@ -10,6 +10,10 @@ from app.repositories.business_repository import (
     BusinessNotFound,
     BusinessRepository,
 )
+from app.repositories.chat_session_repository import (
+    ChatSessionNotFound,
+    ChatSessionRepository,
+)
 from app.repositories.user_repository import UserRepository
 
 __all__ = [
@@ -18,4 +22,6 @@ __all__ = [
     "BusinessError",
     "BusinessAlreadyExists",
     "BusinessNotFound",
+    "ChatSessionRepository",
+    "ChatSessionNotFound",
 ]

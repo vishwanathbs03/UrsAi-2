@@ -9,6 +9,7 @@ import { ScoresRadarCard } from "./ScoresRadarCard";
 import { SwotSummaryCard } from "./SwotSummaryCard";
 import { AiDecisionCard } from "./AiDecisionCard";
 import { RecentAnalysisCard } from "./RecentAnalysisCard";
+import { AdvisorWidget } from "./AdvisorWidget";
 import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -123,6 +124,7 @@ export function DashboardView() {
 
         <ReadinessCard scores={scores?.scores ?? []} />
         <ScoresRadarCard scores={scores?.scores ?? []} />
+        <AdvisorWidget />
 
         <div className="md:col-span-2 xl:col-span-2">
           <SwotSummaryCard
@@ -159,6 +161,7 @@ function DashboardSkeletonGrid() {
         <DashboardSkeleton rows={3} />
         <DashboardSkeleton rows={4} />
         <DashboardSkeleton rows={2} />
+        <DashboardSkeleton rows={3} />
         <div className="md:col-span-2 xl:col-span-3">
           <DashboardSkeleton rows={6} />
         </div>

@@ -1,0 +1,153 @@
+# =============================================================================
+# Atlas AI — production overlay.
+#
+# Use on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Differences from the base file:
+#   - Production env file (.env.production.example).
+#   - Higher gunicorn worker count (sized for the typical 2-CPU prod box).
+#   - Public port 80 on the host (no :8080 prefix). nginx still listens
+#     on 80 inside the container.
+#   - `read_only: true` and tmpfs where the app needs to write.
+#   - Resource limits to keep the boxes predictable.
+#   - No host port for backend/frontend (they are internal-only).
+#   - extra healthcheck retries + longer start_period (cold start).
+# =============================================================================
+
+name: atlas-ai
+
+services:
+  backend:
+    image: atlas-ai/backend:${TAG:-latest}
+    restart: always
+    env_file:
+      - ./deployment/env/.env.production.example
+    environment:
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      GUNICORN_WORKERS: "4"
+      GUNICORN_THREADS: "2"
+      LOG_LEVEL: INFO
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - backend-data:/var/lib/atlas-ai
+      - backend-logs:/var/log/atlas-ai
+    networks:
+      - atlas-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    image: atlas-ai/frontend:${TAG:-latest}
+    restart: always
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://atlas.example.com/api/v1}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Atlas AI}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-https://atlas.example.com}
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    networks:
+      - atlas-net
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: atlas-ai-nginx
+    restart: always
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m
+      - /var/run:size=8m
+    volumes:
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-logs:/var/log/nginx
+    networks:
+      - atlas-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  atlas-net:
+    driver: bridge
+
+volumes:
+  backend-data:
+    driver: local
+  backend-logs:
+    driver: local
+  nginx-logs:
+    driver: local

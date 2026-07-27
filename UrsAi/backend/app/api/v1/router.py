@@ -3,9 +3,11 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    advisor,
     ai,
     auth,
     business,
+    chat,
     copilot,
     dna,
     finance,
@@ -38,3 +40,5 @@ api_router.include_router(twin.router)
 api_router.include_router(ocr.router)
 api_router.include_router(finance.router)
 api_router.include_router(copilot.router)
+api_router.include_router(chat.router)
+api_router.include_router(advisor.router)

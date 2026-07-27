@@ -64,11 +64,11 @@ export function Sidebar({ className }: SidebarProps) {
       <div className="border-t border-border p-4">
         <div className="rounded-lg border border-border bg-card p-4 text-card-foreground">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Sprint 4
+            Sprint 6
           </p>
-          <p className="mt-1 text-sm font-semibold">Action Board live</p>
+          <p className="mt-1 text-sm font-semibold">Analytics live</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Rule firings, AI decisions, and Kanban tracking.
+            Trends, roadmap progress, risks, and opportunities.
           </p>
         </div>
       </div>

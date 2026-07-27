@@ -1,0 +1,66 @@
+# =============================================================================
+# Backend .dockerignore
+#
+# The container only needs the application code, requirements, and the
+# runtime entrypoint. Everything else (venv cache, dev DB, local logs,
+# verify scripts, IDE noise) is excluded so the build context stays small
+# and the COPY layer does not invalidate on irrelevant changes.
+# =============================================================================
+
+# Python bytecode + caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Local virtualenvs (Docker builds its own)
+.venv/
+venv/
+env/
+
+# Local SQLite DB + dev/test artifacts
+*.db
+*.sqlite
+*.sqlite3
+atlas_ai.db
+atlas_ai.db-*
+out/
+verify_out/
+server.log
+*.log
+cookies.txt
+*.json
+!app/data/knowledge_catalog.json
+
+# Verification scripts + dev helpers
+verify_*.py
+scripts/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Tests + coverage
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Distribution
+build/
+dist/
+*.egg-info/
+
+# Migration noise (kept only if app uses Alembic at runtime; right now
+# the schema is created from SQLAlchemy metadata, so the migration dir
+# is dev-only)
+migrations/versions/__pycache__/
+
+# Git
+.git/
+.gitignore
+.github/
