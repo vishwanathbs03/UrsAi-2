@@ -1,0 +1,23 @@
+# =============================================================================
+# Grafana dashboard provider — "Atlas AI Production".
+#
+# Anything dropped under /etc/grafana/dashboards (the directory the
+# container mounts) is auto-loaded on startup. The provider file
+# points Grafana at the mount root and disables the editable UI so
+# the dashboard rows match the spec exactly (no one can accidentally
+# delete a panel through the UI).
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: Atlas AI
+    orgId: 1
+    folder: Atlas AI
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

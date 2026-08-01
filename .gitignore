@@ -1,0 +1,106 @@
+# =============================================================================
+# UrsBiz — Root .gitignore
+# Comprehensive coverage: Python, FastAPI, Node, Next.js, databases,
+# env files, logs, caches, cookies, tokens, generated files, IDE, OS.
+# =============================================================================
+
+# ----------------------- Python / FastAPI ----------------------- #
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.cover
+
+# ----------------------- Node / Next.js ------------------------- #
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ----------------------- Environment files ---------------------- #
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.local.example
+!.env.production.example
+!.env.staging.example
+
+# ----------------------- Databases ------------------------------ #
+*.db
+*.sqlite
+*.sqlite3
+
+# ----------------------- Logs ----------------------------------- #
+*.log
+logs/
+server.log
+_authdebug.log
+
+# ----------------------- Cookies / Tokens / Auth dumps ---------- #
+cookies.txt
+
+# ----------------------- Test & verification output ------------- #
+# Root-level response / output dumps from curl or test scripts.
+login_resp.json
+login.json
+reg.json
+reg2.json
+biz.json
+biz2.json
+chat.json
+recs.json
+roadmap.json
+rules.json
+decision.json
+twin.json
+cop_test.json
+copilot.json
+verify_out/
+
+# Backend test artifacts
+backend/out
+backend/server.log
+backend/_authdebug.log
+
+# ----------------------- Temporary audit / debug files ---------- #
+_audit*
+e2e_debug.py
+# e2e_verify.py is kept in scripts/ as reusable tooling
+/e2e_verify.py
+backend/e2e_verify.py
+
+# ----------------------- One-off generation scripts ------------- #
+generate_pptx.py
+generate_project_structure_pdf.py
+
+# ----------------------- IDE / Editor --------------------------- #
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----------------------- OS ------------------------------------ #
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db

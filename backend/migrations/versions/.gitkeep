@@ -1,0 +1,7 @@
+# Alembic migration versions live here.
+
+No business tables are defined in this milestone. Future schema changes
+will be generated with:
+
+    alembic revision --autogenerate -m "describe change"
+    alembic upgrade head

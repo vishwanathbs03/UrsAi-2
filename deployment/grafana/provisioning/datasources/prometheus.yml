@@ -1,0 +1,26 @@
+# =============================================================================
+# Grafana datasource provisioning — Prometheus.
+#
+# Grafana reads this file at first boot and registers the Prometheus
+# data source as the default. The provider is NOT set to "default"
+# via the UI; doing it here means a fresh container reaches the same
+# state on every restart without operator action.
+#
+# `url` uses the docker-compose service name (not localhost) so the
+# Grafana container can resolve Prometheus through the shared network.
+# `isDefault: true` means every new dashboard panel will be wired to
+# this data source by default.
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST

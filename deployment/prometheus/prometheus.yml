@@ -1,0 +1,47 @@
+# =============================================================================
+# Prometheus — Atlas AI (Sprint 8 Part 2).
+#
+# Local-only scrape config. Targets ONLY the in-network backend container
+# on the standard /metrics endpoint exposed by app.monitoring.health.
+# No external / remote_write receivers — telemetry stays inside the
+# Compose network.
+#
+# Scrape interval is 15s per the spec. The job label is set so the
+# Grafana dashboard can filter by job if a second backend is added
+# later (e.g. for a blue/green split).
+#
+# Alerting is intentionally disabled — Sprint 8 Part 2 is
+# observability-only; alert routing is out of scope.
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  # Atlas AI always runs in UTC; setting the external labels here makes
+  # the time-series consistent with the JSON access log emitted by the
+  # backend.
+  external_labels:
+    cluster: atlas-ai
+    env: production
+
+scrape_configs:
+  - job_name: atlas-backend
+    metrics_path: /metrics
+    scheme: http
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - backend:8000
+        labels:
+          service: backend
+          tier: api
+
+  # Self-scrape lets the dashboard show "is Prometheus alive?" — useful
+  # when the operator is on-site and the only thing they can see is the
+  # Grafana panels.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
