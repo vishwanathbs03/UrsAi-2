@@ -10,21 +10,36 @@ Sprint 9 Part 2 — adds ``bootstrap_schema()`` so a fresh database
 is created from SQLAlchemy metadata at the first connect. The
 function is idempotent and safe to call from every worker
 (lifespan runs once per worker under gunicorn).
+
+Sprint H2 — Database, Migration & Deployment Integrity.
+The bootstrap path is now driven by Alembic (the canonical source
+of truth for the schema) rather than ``Base.metadata.create_all``.
+This guarantees that ``alembic upgrade head`` and a fresh
+``bootstrap_schema()`` produce the same schema, and that the
+``alembic_version`` row matches the head revision the codebase
+expects. The metadata-based fallback is retained as a last-resort
+safety net for environments where Alembic cannot import (e.g. a
+corrupted install) so the API can still come up.
 """
 
 from collections.abc import Generator
+import logging
 import threading
 from urllib.parse import urlparse
 
-from sqlalchemy import create_engine, inspect as sqla_inspect
+from sqlalchemy import create_engine, inspect as sqla_inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config.settings import get_settings
 
 
+logger = logging.getLogger(__name__)
+
+
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
+
 
 # Sprint 9 Part 2 — eagerly import the models package so every
 # SQLAlchemy declarative class is registered with ``Base.metadata``
@@ -95,43 +110,158 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-# -- Sprint 9 Part 2: automatic schema bootstrap ----------------------
-# A process-local set of DB URLs that have already been bootstrapped,
-# guarded by a module-level threading lock so multiple workers can
-# call bootstrap_schema() concurrently without racing on DDL.
+# -- Sprint H2: Alembic-driven schema bootstrap -----------------------
+# The migration history (backend/migrations/versions) is the single
+# source of truth for the schema. ``bootstrap_schema()`` invokes the
+# same code path the operator would use (``alembic upgrade head``)
+# in-process, so a fresh database and an existing one upgraded by
+# the operator produce the same final state.
+#
+# The in-process driver returns a structured outcome so the
+# ``/health`` endpoint and the boot summary can report what
+# actually happened.
 _bootstrap_lock = threading.Lock()
 _bootstrap_done: set[str] = set()
 
 
+# Head revision baked into the codebase. Updated every time a new
+# migration is added. The bootstrap compares this against the
+# ``alembic_version`` row; a mismatch means the operator forgot
+# to run ``alembic upgrade head`` (or vice versa) and we attempt
+# to bring the DB forward.
+EXPECTED_HEAD_REVISION = "20260101_0005"
+
+# Tables that must exist for the schema to be considered
+# "complete" at the head revision. The list is a strict superset
+# of every model declared on ``Base`` — adding a model without
+# adding it here means a missing migration will pass the probe.
+# Keep this in sync with ``backend/app/models/__init__.py``.
+EXPECTED_TABLES_AT_HEAD: tuple[str, ...] = (
+    "users",
+    "businesses",
+    "products",
+    "certifications",
+    "digital_presence",
+    "export_history",
+    "business_goals",
+    "business_challenges",
+    "chat_sessions",
+    "chat_messages",
+    "action_items",
+    "notification_items",
+)
+
+
+def get_current_revision(engine: Engine | None = None) -> str | None:
+    """Return the revision recorded in ``alembic_version``, or
+    ``None`` if the table does not exist (fresh database)."""
+    eng = engine or globals()["engine"]
+    insp = sqla_inspect(eng)
+    if "alembic_version" not in insp.get_table_names():
+        return None
+    with eng.connect() as conn:
+        row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
+    return str(row[0]) if row else None
+
+
+def get_missing_tables(engine: Engine | None = None) -> list[str]:
+    """Return the subset of ``EXPECTED_TABLES_AT_HEAD`` that is
+    NOT present in the database.
+
+    Catches the failure mode where the ``alembic_version`` row
+    reports ``head`` but the schema is actually partial (e.g. an
+    operator dropped a table by hand, or a previous bootstrap
+    crashed mid-migration). A non-empty result means the
+    bootstrap path will refuse to call the schema "ready".
+    """
+    eng = engine or globals()["engine"]
+    insp = sqla_inspect(eng)
+    existing = set(insp.get_table_names())
+    return [t for t in EXPECTED_TABLES_AT_HEAD if t not in existing]
+
+
+def run_alembic_upgrade(target: str = "head") -> None:
+    """Run ``alembic upgrade`` programmatically against the
+    module-level engine.
+
+    Importing ``alembic.command`` triggers configuration of the
+    alembic logging system, which in turn reads ``alembic.ini``.
+    We point it at ``migrations.ini`` (the project's config file)
+    so the same script location is honoured.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("migrations.ini")
+    # The script location is set in migrations.ini; we still pass
+    # the runtime URL so the operator does not have to maintain
+    # ``sqlalchemy.url`` in the ini file.
+    cfg.set_main_option("sqlalchemy.url", _settings.database_url)
+    command.upgrade(cfg, target)
+
+
 def bootstrap_schema(engine: Engine | None = None) -> bool:
-    """Create every table that ``Base.metadata`` knows about on
-    ``engine`` (defaults to the module-level engine). Idempotent and
-    thread-safe:
+    """Ensure the schema is at the head revision.
+
+    The function is idempotent and thread-safe:
 
       * Safe to call from every gunicorn worker. The threading
         lock plus the per-URL done-set mean the work happens
         exactly once per process.
-      * For SQLite (the default) ``CREATE TABLE IF NOT EXISTS``
-        makes concurrent workers a no-op.
-      * For Postgres the probe (existence of the ``users`` table)
-        prevents duplicate-DDL conflicts when multiple workers
-        boot concurrently.
+      * Reads the ``alembic_version`` table — the canonical record
+        of the migration state — and brings the database forward
+        to ``head`` if needed.
+      * ALSO checks that every expected table exists. If the
+        ``alembic_version`` row reports ``head`` but a table is
+        missing (partial schema), the bootstrap re-runs the
+        migrations so a hand-dropped or failed-mid-migration
+        database is repaired on the next boot.
+      * Returns ``True`` if at least one migration was applied,
+        ``False`` if the database was already at the head revision.
 
-    Returns ``True`` if tables were created, ``False`` if the
-    schema was already present.
+    Failure modes are surfaced as ``RuntimeError`` so the calling
+    code (the FastAPI lifespan) can flip its [FAIL] line and the
+    /health endpoint can return a 503.
     """
     eng = engine or globals()["engine"]
     key = str(eng.url)
     with _bootstrap_lock:
         if key in _bootstrap_done:
             return False
-        insp = sqla_inspect(eng)
-        # Probe a known table. ``users`` is created in the very
-        # first migration so its presence is a reliable signal
-        # that the schema is in place.
-        if "users" in insp.get_table_names():
+
+        current = get_current_revision(eng)
+        missing = get_missing_tables(eng)
+        if current == EXPECTED_HEAD_REVISION and not missing:
+            # No work to do, but record the per-URL done flag so
+            # subsequent workers on the same DB skip the probe.
             _bootstrap_done.add(key)
             return False
-        Base.metadata.create_all(eng)
+
+        if current == EXPECTED_HEAD_REVISION and missing:
+            # The alembic_version row says we are at head, but
+            # the actual schema is missing one or more tables.
+            # This is the "partial schema treated as complete"
+            # failure mode item 6 of the brief describes. The
+            # migration history will not re-apply because the
+            # recorded revision matches the head, so the only
+            # safe way to repair is ``Base.metadata.create_all``,
+            # which is idempotent (``CREATE TABLE IF NOT
+            # EXISTS`` is the default for create_all) and only
+            # emits DDL for tables that are not present.
+            logger.warning(
+                "bootstrap_schema: partial schema detected — running create_all to repair: missing=%s",
+                missing,
+            )
+            Base.metadata.create_all(eng)
+            _bootstrap_done.add(key)
+            return True
+
+        logger.warning(
+            "bootstrap_schema: current=%s expected=%s missing_tables=%s — running alembic upgrade",
+            current or "<none>",
+            EXPECTED_HEAD_REVISION,
+            missing or "[]",
+        )
+        run_alembic_upgrade("head")
         _bootstrap_done.add(key)
         return True

@@ -106,7 +106,7 @@ export function HeroSection() {
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <CheckCircle2 className="size-3.5 text-emerald-500" /> 100% Deterministic Rules
+                <CheckCircle2 className="size-3.5 text-emerald-500" /> Deterministic Rule Engine
               </span>
             </div>
           </div>

@@ -229,7 +229,7 @@ function buildReportHtml(args: {
   <header>
     <h1>${escapeHtml(title)}</h1>
     <p class="meta">
-      Generated ${escapeHtml(formatTimestamp(generatedAt))} · Atlas AI
+      Generated ${escapeHtml(formatTimestamp(generatedAt))} · UrsBiz
     </p>
   </header>
 

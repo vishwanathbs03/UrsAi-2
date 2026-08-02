@@ -14,7 +14,7 @@ const faqs = [
   },
   {
     q: "How does the AI engine avoid hallucinations?",
-    a: "UrsBiz uses a 100% deterministic rule engine for financial scoring and subsidy eligibility to ensure zero mathematical hallucinations. For natural language queries, it pairs vector RAG search over official government gazette guidelines.",
+    a: "UrsBiz uses a deterministic rule engine for financial scoring and subsidy eligibility so every score and matching percentage is traceable to the input business profile and the cited rule. For natural language queries, it pairs vector RAG search over official government gazette guidelines, and the UI clearly distinguishes calculated scores from scenario estimates.",
   },
   {
     q: "How long does it take to onboard my business profile?",
@@ -33,51 +33,48 @@ const faqs = [
 export function FaqSection() {
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
-  const toggle = (idx: number) => {
-    setOpenIdx(openIdx === idx ? null : idx);
-  };
-
   return (
-    <section className="border-t border-border bg-muted/20 py-20 md:py-28">
-      <div className="container mx-auto max-w-4xl px-4">
-        <div className="text-center">
-          <p className="text-xs font-bold uppercase tracking-widest text-primary">
+    <section className="bg-card py-20">
+      <div className="container">
+        <div className="mx-auto max-w-3xl text-center">
+          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-background/60 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            <HelpCircle className="size-3.5 text-primary" aria-hidden="true" />
             Frequently Asked Questions
-          </p>
-          <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-foreground md:text-4xl">
-            Everything You Need to Know About UrsBiz
+          </span>
+          <h2 className="mt-4 text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl">
+            Answers to the most common MSME questions.
           </h2>
-          <p className="mt-4 text-base text-muted-foreground">
-            Have questions about health scoring, scheme discovery, or executive reports? We have answers.
+          <p className="mt-3 text-base text-muted-foreground">
+            Clear, evidence-backed answers — no padding, no sales language.
           </p>
         </div>
 
-        <div className="mt-12 space-y-4">
-          {faqs.map((faq, i) => {
-            const isOpen = openIdx === i;
-
+        <div className="mx-auto mt-12 max-w-3xl divide-y divide-border rounded-2xl border border-border bg-background shadow-sm">
+          {faqs.map((faq, idx) => {
+            const open = openIdx === idx;
             return (
-              <div
-                key={faq.q}
-                className="rounded-xl border border-border bg-card shadow-soft transition-all"
-              >
+              <div key={faq.q}>
                 <button
-                  onClick={() => toggle(i)}
-                  className="flex w-full items-center justify-between p-5 text-left text-base font-bold text-foreground focus:outline-none"
+                  type="button"
+                  className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left text-sm font-semibold text-foreground transition hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-expanded={open}
+                  aria-controls={`faq-panel-${idx}`}
+                  onClick={() => setOpenIdx(open ? null : idx)}
                 >
-                  <span className="flex items-center gap-3">
-                    <HelpCircle className="size-4 text-primary shrink-0" />
-                    {faq.q}
-                  </span>
+                  <span>{faq.q}</span>
                   <ChevronDown
-                    className={`size-5 text-muted-foreground transition-transform duration-200 ${
-                      isOpen ? "rotate-180 text-primary" : ""
-                    }`}
+                    className={
+                      "size-4 shrink-0 transition-transform " +
+                      (open ? "rotate-180 text-primary" : "text-muted-foreground")
+                    }
+                    aria-hidden="true"
                   />
                 </button>
-
-                {isOpen && (
-                  <div className="border-t border-border/60 px-5 pt-3 pb-5 text-sm text-muted-foreground leading-relaxed">
+                {open && (
+                  <div
+                    id={`faq-panel-${idx}`}
+                    className="px-5 pb-5 text-sm text-muted-foreground"
+                  >
                     {faq.a}
                   </div>
                 )}

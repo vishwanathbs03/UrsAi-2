@@ -57,6 +57,8 @@ import type {
   QueryKind,
   SuggestedQuestion,
 } from "./types";
+import { buildSmartFollowUps, type SmartFollowUp } from "./smart-follow-ups";
+import { useAssistantMemory, topicForKind } from "./memory";
 
 // --------------------------------------------------------------------------- //
 // Per-endpoint TanStack Query hooks
@@ -133,6 +135,37 @@ export interface UseAssistantDataResult {
   clear: () => void;
   /** True while the assistant is composing a reply. */
   isThinking: boolean;
+
+  /**
+   * Three contextual follow-up chips derived from the most recent
+   * assistant answer. Pure derivation via `buildSmartFollowUps`
+   * — no new engines. Empty when the user hasn't asked yet.
+   */
+  smartFollowUps: readonly SmartFollowUp[];
+
+  /**
+   * Topics the assistant has answered so far in this session
+   * ("Improve my business", "Finance", etc.) — fed to
+   * `buildSmartFollowUps` and surfaced as the "Earlier you
+   * asked" chips above the message bubbles.
+   */
+  memoryTopics: string[];
+
+  /**
+   * Free-text search across the local conversation. Returns the
+   * matching messages (case-insensitive substring over content).
+   */
+  searchConversation: (query: string) => ChatMessage[];
+
+  /**
+   * Export the current conversation. Returns a temporary blob URL
+   * the caller can hand to an anchor element. Pure — does not
+   * touch the network.
+   */
+  exportConversation: (
+    format: "markdown" | "json" | "text",
+    legalName?: string,
+  ) => { url: string; filename: string };
 }
 
 // --------------------------------------------------------------------------- //
@@ -287,6 +320,11 @@ export function useAssistantData(): UseAssistantDataResult {
   }));
   const [isThinking, setIsThinking] = useState(false);
 
+  // Session-only memory. Tracks the topics the user has asked
+  // about so `smartFollowUps` and the "Earlier you asked …"
+  // chips stay contextual across turns. Wiped by `clear`.
+  const memory = useAssistantMemory();
+
   const state: AssistantDataState = useMemo(() => {
     if (noBusinessError) {
       const detail =
@@ -378,6 +416,15 @@ export function useAssistantData(): UseAssistantDataResult {
         messages: [...prev.messages, userMsg],
         lastMessageAt: userMsg.createdAt,
       }));
+      // Track the topic in session memory so smartFollowUps +
+      // "Earlier you asked" chips stay contextual.
+      memory.remember({
+        id: userMsg.id,
+        prompt: userMsg.content,
+        kind,
+        topic: topicForKind(kind),
+        actionIds: [],
+      });
       // Use queueMicrotask so the user message renders first.
       queueMicrotask(() => {
         const reply = buildReply(state.bundle, kind);
@@ -397,7 +444,7 @@ export function useAssistantData(): UseAssistantDataResult {
         setIsThinking(false);
       });
     },
-    [buildReply, state],
+    [buildReply, state, memory.remember],
   );
 
   const submitSuggested = useCallback(
@@ -416,7 +463,85 @@ export function useAssistantData(): UseAssistantDataResult {
       lastMessageAt: null,
     });
     setIsThinking(false);
-  }, []);
+    memory.forget();
+  }, [memory]);
+
+  // ----------------------------------------------------------------- //
+  // Smart follow-ups — derive from the most recent assistant message.
+  // ----------------------------------------------------------------- //
+  const smartFollowUps: readonly SmartFollowUp[] = useMemo(() => {
+    const last = (() => {
+      for (let i = conversation.messages.length - 1; i >= 0; i--) {
+        const m = conversation.messages[i];
+        if (m.role === "assistant") return m;
+      }
+      return null;
+    })();
+    if (!last || !last.kind) return [];
+    return buildSmartFollowUps(last.kind, memory.topicsAnswered);
+  }, [conversation.messages, memory.topicsAnswered]);
+
+  // Memory topics — exposed as a mutable list (matches the
+  // ConversationList / MessageBubble consumer signatures).
+  const memoryTopics: string[] = memory.topicsAnswered;
+
+  // ----------------------------------------------------------------- //
+  // Conversation search — pure substring over assistant + user msgs.
+  // ----------------------------------------------------------------- //
+  const searchConversation = useCallback(
+    (query: string): ChatMessage[] => {
+      const q = query.trim().toLowerCase();
+      if (q.length === 0) return [];
+      return conversation.messages.filter((m) =>
+        m.content.toLowerCase().includes(q),
+      );
+    },
+    [conversation.messages],
+  );
+
+  // ----------------------------------------------------------------- //
+  // Conversation export — pure client-side Blob download.
+  // ----------------------------------------------------------------- //
+  type ExportFormat = "markdown" | "json" | "text";
+  type ExportExt = "md" | "json" | "txt";
+  const exportConversation = useCallback(
+    (
+      format: ExportFormat,
+      legalName?: string,
+    ): { url: string; filename: string } => {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const safeName = (legalName ?? "conversation")
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase();
+      let body = "";
+      let mime = "text/plain";
+      let ext: ExportExt = "txt";
+      if (format === "json") {
+        body = JSON.stringify(conversation.messages, null, 2);
+        mime = "application/json";
+        ext = "json";
+      } else if (format === "markdown") {
+        body = conversation.messages
+          .map((m) => {
+            const head = m.role === "user" ? "## You" : "## Assistant";
+            return `${head}\n\n${m.content}\n`;
+          })
+          .join("\n---\n\n");
+        mime = "text/markdown";
+        ext = "md";
+      } else {
+        body = conversation.messages
+          .map((m) => `[${m.role.toUpperCase()}]\n${m.content}`)
+          .join("\n\n---\n\n");
+        ext = "txt";
+      }
+      const blob = new Blob([body], { type: mime });
+      const url = URL.createObjectURL(blob);
+      return { url, filename: `${safeName}-${stamp}.${ext}` };
+    },
+    [conversation.messages],
+  );
 
   return {
     state,
@@ -428,6 +553,10 @@ export function useAssistantData(): UseAssistantDataResult {
     submitSuggested,
     clear,
     isThinking,
+    smartFollowUps,
+    memoryTopics,
+    searchConversation,
+    exportConversation,
   };
 }
 

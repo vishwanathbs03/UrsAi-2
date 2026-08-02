@@ -6,7 +6,7 @@
  * app shell. The brief calls for:
  *
  *   1. Logo appears
- *   2. Atlas AI initializes
+ *   2. UrsBiz initializes
  *   3. Loading Business Intelligence
  *   4. Loading Advisor Engine
  *   5. Loading Decision Engine

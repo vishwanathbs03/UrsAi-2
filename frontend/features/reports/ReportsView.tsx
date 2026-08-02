@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowRight, Building2, FileText } from "lucide-react";
+import { ArrowRight, FileText, Sparkles, TrendingUp } from "lucide-react";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorState } from "@/components/common/ErrorState";
 import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
@@ -32,13 +32,13 @@ import { useReportsData, type ReportsData } from "./use-reports-data";
 /**
  * Top-level Executive Reports view.
  *
- * Layout: sidebar TOC on the left (sticky, hidden on print),
- * report sections stacked on the right. The PrintStyles
- * component attaches a single @media print block that hides
- * the sidebar / header buttons and switches card surfaces to
- * a paper-friendly off-white when the user triggers browser
- * print. A small footer note renders on the printed page so
- * the reader knows the source.
+ * Layout: a hero band on top (executive KPIs + primary actions),
+ * sidebar TOC on the left (sticky, hidden on print), report sections
+ * stacked on the right. The PrintStyles component attaches a single
+ * @media print block that hides the sidebar / header buttons and
+ * switches card surfaces to a paper-friendly off-white when the
+ * user triggers browser print. A small footer note renders on the
+ * printed page so the reader knows the source.
  */
 export function ReportsView() {
   const { state, refresh, isFetching } = useReportsData();
@@ -50,6 +50,35 @@ export function ReportsView() {
       state.data.twin.generated_at ??
       state.data.recommendations.generated_at
     );
+  }, [state]);
+
+  const hero = useMemo(() => {
+    if (state.status !== "ready") return undefined;
+    const twin = state.data.twin;
+    const recs = state.data.recommendations;
+    const risk =
+      twin.risk_matrix.critical_risks.length +
+      twin.risk_matrix.high_risks.length +
+      twin.risk_matrix.medium_risks.length;
+    const opp =
+      twin.opportunity_matrix.quick_wins.length +
+      twin.opportunity_matrix.strategic_investments.length +
+      twin.opportunity_matrix.export_opportunities.length +
+      twin.opportunity_matrix.digital_opportunities.length;
+    const projected = twin.timeline.twelve_month.projected_overall_score;
+    const lift = Math.max(
+      0,
+      projected - twin.current_health.overall_business_score,
+    );
+    return {
+      score: twin.current_health.overall_business_score,
+      band: twin.scores.overall_level,
+      dna: twin.current_health.business_dna_match,
+      recommendations: recs.summary.total_recommendations,
+      risks: risk,
+      opportunities: opp,
+      improvement: Math.round(lift),
+    };
   }, [state]);
 
   if (state.status === "loading") {
@@ -72,19 +101,23 @@ export function ReportsView() {
         <EmptyState
           illustration="building"
           title="No business profile yet"
-          description={state.detail ||
+          description={
+            state.detail ||
             "Set up your business profile to generate the executive report."
           }
           actionLabel="Create business profile"
-          onAction={() => { if (typeof window !== "undefined") window.location.href = "/business"; }}
+          onAction={() => {
+            if (typeof window !== "undefined") window.location.href = "/business";
+          }}
           secondaryActionLabel="Go to dashboard"
-          onSecondaryAction={() => { if (typeof window !== "undefined") window.location.href = "/dashboard"; }}
+          onSecondaryAction={() => {
+            if (typeof window !== "undefined") window.location.href = "/dashboard";
+          }}
         />
         <div className="mt-4 flex items-center justify-center">
           <Button asChild variant="ghost" size="sm">
             <Link href="/business">
-              Go to Business
-              <ArrowRight className="size-4" aria-hidden="true" />
+              Go to Business <ArrowRight className="size-4" aria-hidden="true" />
             </Link>
           </Button>
         </div>
@@ -111,14 +144,18 @@ export function ReportsView() {
       <PageContainer width="wide">
         <div className="flex flex-col gap-4 lg:flex-row">
           <ReportSidebar />
-
-          <div className="flex min-w-0 flex-1 flex-col gap-4">
+          <div className="flex min-w-0 flex-1 flex-col gap-6 animate-page-fade">
             <ReportHeader
               lastAnalyzedAt={lastAnalyzedAt}
               isRefreshing={isFetching}
               onRefresh={refresh}
+              hero={hero}
             />
 
+            {/* Custom executive chapters — Risk Matrix / Opportunity / Forecast / Schemes */}
+            <ExecutiveChapters data={state.data} />
+
+            {/* Existing 12 sections */}
             {REPORT_SECTIONS.map((meta) => (
               <Section
                 key={meta.key}
@@ -132,6 +169,116 @@ export function ReportsView() {
         </div>
       </PageContainer>
     </>
+  );
+}
+
+function ExecutiveChapters({ data }: { data: ReportsData }) {
+  const twin = data.twin;
+  const riskCount =
+    twin.risk_matrix.critical_risks.length +
+    twin.risk_matrix.high_risks.length +
+    twin.risk_matrix.medium_risks.length;
+  const oppCount =
+    twin.opportunity_matrix.quick_wins.length +
+    twin.opportunity_matrix.strategic_investments.length +
+    twin.opportunity_matrix.export_opportunities.length +
+    twin.opportunity_matrix.digital_opportunities.length;
+
+  return (
+    <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <ReportSection
+        meta={{
+          key: "executive-findings" as ReportSectionKey,
+          id: "report-executive-findings",
+          badge: "AI Findings",
+          title: "AI Executive Findings",
+          caption:
+            "Top strengths, risks, and opportunities, surfaced from the upstream engines.",
+        }}
+      >
+        <ul className="flex flex-col gap-2 text-sm">
+          <li className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+            <Sparkles className="mt-0.5 size-3.5 text-emerald-500" aria-hidden="true" />
+            <span>
+              <strong>Strength:</strong> Business score is {twin.current_health.overall_business_score}/100 with
+              a {twin.scores.overall_level} band — solid footing for the next two quarters.
+            </span>
+          </li>
+          <li className="flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2">
+            <Sparkles className="mt-0.5 size-3.5 text-rose-500" aria-hidden="true" />
+            <span>
+              <strong>Risk:</strong> {riskCount} active risk{twin.risk_matrix.critical_risks.length === 1 ? "" : "s"} —
+              {twin.risk_matrix.critical_risks[0]
+                ? ` critical on "${twin.risk_matrix.critical_risks[0].title}".`
+                : " none critical right now."}
+            </span>
+          </li>
+          <li className="flex items-start gap-2 rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2">
+            <Sparkles className="mt-0.5 size-3.5 text-violet-500" aria-hidden="true" />
+            <span>
+              <strong>Opportunity:</strong> {oppCount} matrix-bucket opportunities ready to be prioritised across
+              quick wins, strategy, export and digital tracks.
+            </span>
+          </li>
+          <li className="flex items-start gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2">
+            <TrendingUp className="mt-0.5 size-3.5 text-sky-500" aria-hidden="true" />
+            <span>
+              <strong>Outlook:</strong> 12-month projection adds +{Math.round(
+                Math.max(
+                  0,
+                  twin.timeline.twelve_month.projected_overall_score -
+                    twin.current_health.overall_business_score,
+                ),
+              )} pts at current execution pace.
+            </span>
+          </li>
+        </ul>
+      </ReportSection>
+      <ReportSection
+        meta={{
+          key: "executive-decisions" as ReportSectionKey,
+          id: "report-executive-decisions",
+          badge: "Risk Matrix",
+          title: "Risk & Opportunity Matrix",
+          caption: "Deterministic bucketing from the Digital Twin matrices.",
+        }}
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <div className="exec-card relative flex flex-col gap-1 p-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Active
+            </span>
+            <span className="text-3xl font-black tabular-nums text-rose-600">
+              {riskCount}
+            </span>
+          </div>
+          <div className="exec-card relative flex flex-col gap-1 p-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Opportunity
+            </span>
+            <span className="text-3xl font-black tabular-nums text-emerald-600">
+              {oppCount}
+            </span>
+          </div>
+          <div className="exec-card relative flex flex-col gap-1 p-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Resolved
+            </span>
+            <span className="text-3xl font-black tabular-nums text-sky-600">
+              {twin.risk_matrix.resolved_risks.length}
+            </span>
+          </div>
+          <div className="exec-card relative flex flex-col gap-1 p-3">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Emerging
+            </span>
+            <span className="text-3xl font-black tabular-nums text-amber-600">
+              {twin.risk_matrix.emerging_risks.length}
+            </span>
+          </div>
+        </div>
+      </ReportSection>
+    </section>
   );
 }
 
@@ -176,10 +323,10 @@ function Section({
   sectionKey: ReportSectionKey;
 }) {
   switch (sectionKey) {
-    case "business-profile":
-      return <BusinessProfileSection data={data} />;
     case "executive-summary":
       return <ExecutiveSummarySection data={data} />;
+    case "business-profile":
+      return <BusinessProfileSection data={data} />;
     case "business-health":
       return <BusinessHealthSection data={data} />;
     case "business-scores":

@@ -55,7 +55,13 @@ from app.monitoring.metrics import (
 )
 from app.services.ai import AIDecisionService
 from app.services.knowledge.repository import JsonKnowledgeRepository
-from app.utils.database import SessionLocal
+from app.utils.database import (
+    EXPECTED_HEAD_REVISION,
+    EXPECTED_TABLES_AT_HEAD,
+    SessionLocal,
+    get_current_revision,
+    get_missing_tables,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -218,11 +224,38 @@ def _aggregate_prometheus_metrics() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+def _probe_migrations() -> tuple[bool, str, str, list[str]]:
+    """Return (ok, status, current_revision, missing_tables).
+
+    ok=True when the ``alembic_version`` table is present AND the
+    recorded revision matches ``EXPECTED_HEAD_REVISION`` AND every
+    expected table exists. A None current revision (no
+    alembic_version table) is reported as ``pending`` — the
+    lifespan handler will then call ``bootstrap_schema()`` to bring
+    the database forward.
+    """
+    try:
+        current = get_current_revision()
+        missing = get_missing_tables()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"error: {type(exc).__name__}: {exc}", "", list(EXPECTED_TABLES_AT_HEAD)
+
+    if current is None:
+        return False, "pending", "", missing
+    if current == EXPECTED_HEAD_REVISION and not missing:
+        return True, "up_to_date", current, missing
+    detail = f"current={current} expected={EXPECTED_HEAD_REVISION}"
+    if missing:
+        detail += f" missing_tables={missing}"
+    return False, f"out_of_date ({detail})", current, missing
+
+
 def _build_full_health() -> dict[str, Any]:
     settings = get_settings()
     db_ok, db_detail = _probe_database()
     kn_ok, kn_detail = _probe_knowledge()
     ai_ok, ai_detail = _probe_ai()
+    mig_ok, mig_status, mig_revision, mig_missing = _probe_migrations()
 
     APP_UPTIME.set(_uptime_seconds())
     BUILD_INFO.labels(version=settings.app_version, env=settings.app_env).set(1)
@@ -230,11 +263,18 @@ def _build_full_health() -> dict[str, Any]:
     metrics_summary = _aggregate_prometheus_metrics()
 
     return {
-        "status": "ok",
+        "status": "ok" if (db_ok and mig_ok) else "degraded",
         "api": {"ok": True, "detail": "alive"},
         "database": {"ok": db_ok, "detail": db_detail},
         "ai": {"ok": ai_ok, "detail": ai_detail},
         "knowledge": {"ok": kn_ok, "detail": kn_detail},
+        "migrations": {
+            "ok": mig_ok,
+            "status": mig_status,
+            "current_revision": mig_revision or None,
+            "expected_head": EXPECTED_HEAD_REVISION,
+            "missing_tables": mig_missing,
+        },
         "uptime": round(_uptime_seconds(), 3),
         "version": settings.app_version,
         "env": settings.app_env,
@@ -275,8 +315,9 @@ def health_ready(response: Response) -> dict[str, Any]:
     db_ok, db_detail = _probe_database()
     kn_ok, kn_detail = _probe_knowledge()
     ai_ok, ai_detail = _probe_ai()
+    mig_ok, mig_status, mig_revision, mig_missing = _probe_migrations()
 
-    ready = db_ok and kn_ok and ai_ok
+    ready = db_ok and kn_ok and ai_ok and mig_ok
     response.status_code = (
         status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
     )
@@ -285,11 +326,16 @@ def health_ready(response: Response) -> dict[str, Any]:
         "database": db_ok,
         "knowledge": kn_ok,
         "ai": ai_ok,
+        "migrations": mig_ok,
         "details": {
             "database": db_detail,
             "knowledge": kn_detail,
             "ai": ai_detail,
+            "migrations": mig_status,
         },
+        "current_revision": mig_revision or None,
+        "expected_head": EXPECTED_HEAD_REVISION,
+        "missing_tables": mig_missing,
     }
 
 

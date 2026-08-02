@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
 import { Logo } from "@/components/common/Logo";
+import { ThemeToggle } from "@/components/common/ThemeToggle";
 import { NavbarAuth } from "@/components/auth/NavbarAuth";
 import { cn } from "@/lib/utils";
 import { isActiveLink, mainNavLinks } from "@/lib/navigation";
@@ -64,7 +65,10 @@ export function Navbar({ className }: NavbarProps) {
           </nav>
         </div>
 
-        <NavbarAuth />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <NavbarAuth />
+        </div>
 
         <button
           type="button"

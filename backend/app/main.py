@@ -61,7 +61,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     # 3. Database reachable + schema bootstrap
     try:
+        from app.utils.database import EXPECTED_HEAD_REVISION, get_current_revision
+
+        before = get_current_revision()
         created = bootstrap_schema()
+        after = get_current_revision()
         _check(
             "Database Connected",
             True,
@@ -69,12 +73,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         )
         _check(
             "Migrations Applied",
-            True,
-            "tables created" if created else "schema already present",
+            after == EXPECTED_HEAD_REVISION,
+            (
+                f"revision={after or '<none>'} expected={EXPECTED_HEAD_REVISION} "
+                f"({'bootstrap upgraded' if created else 'no upgrade needed'})"
+            ),
         )
     except Exception as exc:
         _check("Database Connected", False, str(exc))
-        _check("Migrations Applied", False, "schema bootstrap failed — check DATABASE_URL")
+        _check("Migrations Applied", False, f"schema bootstrap failed — {type(exc).__name__}: {exc}")
 
     # 4. Security warnings
     warnings = validate_security_settings(settings)

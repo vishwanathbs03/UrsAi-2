@@ -16,7 +16,7 @@ export default function LoginPage() {
             Welcome back
           </h1>
           <p className="text-sm text-muted-foreground">
-            Sign in to your Atlas AI account
+            Sign in to your UrsBiz account
           </p>
         </div>
         <Suspense fallback={null}>

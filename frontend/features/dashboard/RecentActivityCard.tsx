@@ -25,8 +25,8 @@ export function RecentActivityCard({ activities = [] }: RecentActivityCardProps)
       {activities.length === 0 ? (
         <EmptyState
           illustration="inbox"
-          title="No recent activity"
-          description="Your latest business profile updates and intelligence runs will appear here."
+          title="No recent business activity yet."
+          description="Updates from profile edits, intelligence runs, and report exports will appear here as you use the platform."
         />
       ) : (
         <div className="flex flex-col gap-2">

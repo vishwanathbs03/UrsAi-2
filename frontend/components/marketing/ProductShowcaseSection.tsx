@@ -39,7 +39,7 @@ const showcases = [
     href: "/analytics",
     stats: [
       { label: "Projection Horizon", val: "12 Months" },
-      { label: "Accuracy Rate", val: "100% Deterministic" },
+      { label: "Scoring Method", val: "Deterministic Rules" },
     ],
   },
   {

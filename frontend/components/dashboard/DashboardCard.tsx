@@ -18,6 +18,8 @@ export interface DashboardCardProps extends HTMLAttributes<HTMLDivElement> {
   animate?: boolean;
   /** Tighten padding — useful for the smaller cards. */
   compact?: boolean;
+  /** Optional accent gradient stripe at top. */
+  accent?: boolean;
 }
 
 /**
@@ -38,6 +40,7 @@ export const DashboardCard = forwardRef<HTMLDivElement, DashboardCardProps>(
       icon,
       animate = true,
       compact = false,
+      accent = false,
       className,
       children,
       ...rest
@@ -48,13 +51,20 @@ export const DashboardCard = forwardRef<HTMLDivElement, DashboardCardProps>(
       <div
         ref={ref}
         className={cn(
-          "flex flex-col gap-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-soft hover-lift",
+          "exec-card relative flex flex-col gap-4 text-card-foreground",
           compact && "gap-3 p-4",
-          animate && "animate-fadeUp",
+          !compact && "p-5",
+          animate && "exec-rise",
           className,
         )}
         {...rest}
       >
+        {accent && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 h-[3px] rounded-t-[var(--radius)] bg-gradient-to-r from-primary via-sky-500 to-violet-500"
+          />
+        )}
         {(badge || title || trailing || icon) && (
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 flex-col gap-0.5">

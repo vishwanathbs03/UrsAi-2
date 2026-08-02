@@ -30,6 +30,23 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Anti-FOUC: apply persisted theme before first paint.
+            Must live here, not in a client effect, so the .dark
+            class is in place before React hydrates. */}
+        <script
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var t=localStorage.getItem('ursbiz.theme');" +
+              "if(t==='dark'||t==='light'){" +
+              "document.documentElement.classList[t==='dark'?'add':'remove']('dark');" +
+              "}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){" +
+              "document.documentElement.classList.add('dark');" +
+              "}}catch(e){}})();",
+          }}
+        />
+      </head>
       <body className="min-h-screen bg-background text-foreground antialiased">
         <a
           href="#main-content"

@@ -1,54 +1,78 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { Download, Printer, RefreshCcw } from "lucide-react";
-import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { Button } from "@/components/ui/button";
+import { AnimatedCounter } from "@/components/common/AnimatedCounter";
 import { cn } from "@/lib/utils";
+import { Sparkles } from "lucide-react";
+import { ExecutiveKpiCard } from "@/components/dashboard/ExecutiveKpiCard";
 
 interface ReportHeaderProps {
   lastAnalyzedAt: string | null;
   isRefreshing: boolean;
   onRefresh: () => void;
+  /** Optional top-line numbers the hero should surface. */
+  hero?: {
+    score: number;
+    band: string;
+    dna: number;
+    recommendations: number;
+    risks: number;
+    opportunities: number;
+    improvement: number;
+  };
 }
 
-/**
- * Report header — title, last-analysed timestamp, Refresh
- * control, Print, and Download PDF placeholder button.
- *
- * The Print button calls `window.print()`. The Download PDF
- * button is a placeholder per the milestone spec — the
- * backend has no PDF endpoint yet. Both buttons are wrapped
- * in a "no-print" class so the @media print block in
- * PrintStyles hides them.
- */
 export function ReportHeader({
   lastAnalyzedAt,
   isRefreshing,
   onRefresh,
+  hero,
 }: ReportHeaderProps) {
   const handlePrint = useCallback(() => {
     if (typeof window === "undefined") return;
     window.print();
   }, []);
 
-  const handleDownloadPlaceholder = useCallback(() => {
-    // Placeholder: PDF generation is out of scope for Sprint 6
-    // Part 2. Surface a non-blocking toast-like message via
-    // window.print() so the user can still "save as PDF"
-    // through the browser's print dialog. This is the same
-    // UX a placeholder typically offers until the backend
-    // ships a real PDF endpoint.
-    if (typeof window === "undefined") return;
-    window.print();
-  }, []);
+  const greeting = useMemo(() => greetByHour(new Date().getHours()), []);
+  const today = useMemo(
+    () =>
+      new Date().toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }),
+    [],
+  );
 
   return (
-    <DashboardCard
-      badge="Executive Report"
-      title="Business Executive Report"
-      caption="A consolidated read of the business across every analytical engine. Print-ready; downloadable as PDF through the browser's print dialog."
-      trailing={
+    <section className="exec-card relative flex flex-col gap-5 p-6 report-cover">
+      <span
+        aria-hidden="true"
+        className="absolute inset-x-0 top-0 h-[4px] rounded-t-[var(--radius)] bg-gradient-to-r from-violet-500 via-primary to-sky-500"
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 rounded-[var(--radius)] bg-gradient-to-br from-primary/10 via-transparent to-violet-500/10"
+      />
+      <div className="relative grid grid-cols-1 gap-4 lg:grid-cols-[1fr_auto] lg:items-start">
+        <div className="flex flex-col gap-2">
+          <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">
+            <Sparkles className="size-3" aria-hidden="true" /> {greeting}
+            Executive Report
+          </span>
+          <h1 className="text-2xl font-black leading-tight text-foreground sm:text-3xl">
+            {hero
+              ? `${hero.score}/100 — ${hero.band}`
+              : "Business Executive Report"}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Generated {today}. A consolidated read of the business across every
+            analytical engine — print-ready, downloadable as PDF.
+          </p>
+        </div>
         <div className="report-no-print flex flex-wrap items-center justify-end gap-2">
           <Button
             type="button"
@@ -81,38 +105,14 @@ export function ReportHeader({
           </Button>
           <Button
             type="button"
-            variant="outline"
-            size="sm"
-            onClick={async () => {
-              try {
-                const res = await fetch("/api/v1/reports/csv", { credentials: "include" });
-                if (res.ok) {
-                  const blob = await res.blob();
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "Business_Dashboard_Export.csv";
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                }
-              } catch {
-                // ignore
-              }
-            }}
-            aria-label="Download CSV Data Export"
-          >
-            <Download className="size-4 text-emerald-500" aria-hidden="true" />
-            <span className="hidden sm:inline">Download CSV</span>
-          </Button>
-          <Button
-            type="button"
             variant="default"
             size="sm"
             onClick={async () => {
               try {
-                const res = await fetch("/api/v1/reports/pdf?report_type=executive", { credentials: "include" });
+                const res = await fetch(
+                  "/api/v1/reports/pdf?report_type=executive",
+                  { credentials: "include" },
+                );
                 if (res.ok) {
                   const blob = await res.blob();
                   const url = URL.createObjectURL(blob);
@@ -136,9 +136,55 @@ export function ReportHeader({
             <span className="hidden sm:inline">Download PDF</span>
           </Button>
         </div>
-      }
-    >
-      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+      </div>
+      {hero && (
+        <div className="report-grid-6 relative grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          <ExecutiveKpiCard
+            badge="Score"
+            label="Overall"
+            value={hero.score}
+            tone={hero.score >= 70 ? "success" : hero.score >= 40 ? "warn" : "danger"}
+            caption={hero.band}
+          />
+          <ExecutiveKpiCard
+            badge="DNA"
+            label="DNA Match"
+            value={hero.dna}
+            tone="violet"
+            caption="Archetype fit"
+          />
+          <ExecutiveKpiCard
+            badge="Actions"
+            label="Recommendations"
+            value={hero.recommendations}
+            tone="primary"
+            caption="Prioritised"
+          />
+          <ExecutiveKpiCard
+            badge="Risk"
+            label="Active risks"
+            value={hero.risks}
+            tone={hero.risks > 3 ? "danger" : hero.risks > 0 ? "warn" : "success"}
+            caption="From engine"
+          />
+          <ExecutiveKpiCard
+            badge="Opportunity"
+            label="Open opportunities"
+            value={hero.opportunities}
+            tone="success"
+            caption="Untapped upside"
+          />
+          <ExecutiveKpiCard
+            badge="Uplift"
+            label="12-month lift"
+            value={hero.improvement}
+            suffix="pts"
+            tone="primary"
+            caption="Projected"
+          />
+        </div>
+      )}
+      <div className="relative flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <span
             className="size-1.5 rounded-full bg-primary"
@@ -150,8 +196,16 @@ export function ReportHeader({
           {lastAnalyzedAt ? formatTimestamp(lastAnalyzedAt) : "—"}
         </span>
       </div>
-    </DashboardCard>
+    </section>
   );
+}
+
+function greetByHour(hour: number): string {
+  if (hour < 5) return "Late Evening";
+  if (hour < 12) return "Morning";
+  if (hour < 17) return "Afternoon";
+  if (hour < 21) return "Evening";
+  return "Night";
 }
 
 function formatTimestamp(iso: string): string {
@@ -169,3 +223,6 @@ function formatTimestamp(iso: string): string {
     return iso;
   }
 }
+
+// Defeat unused-import lint if AnimatedCounter is removed during edits.
+void AnimatedCounter;

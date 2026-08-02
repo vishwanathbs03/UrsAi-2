@@ -50,10 +50,12 @@ import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
 import { Button } from "@/components/ui/button";
 import { AssistantHeader } from "./AssistantHeader";
 import { ChatSessionsList } from "./ChatSessionsList";
-import { ContextPanel } from "./ContextPanel";
 import { ConversationList } from "./ConversationList";
+import { ContextPanel } from "./ContextPanel";
 import { PromptInput } from "./PromptInput";
 import { SuggestedQuestions } from "./SuggestedQuestions";
+import { SmartFollowUps } from "./SmartFollowUps";
+import { ConversationToolbar } from "./ConversationToolbar";
 import { useAssistantData } from "./use-assistant-data";
 import { chatService, type ChatMessageOut } from "@/services";
 import { cn } from "@/lib/utils";
@@ -91,6 +93,10 @@ export function AssistantView() {
     submitSuggested,
     clear,
     isThinking,
+    smartFollowUps,
+    memoryTopics,
+    exportConversation,
+    searchConversation,
   } = useAssistantData();
 
   // Sprint 7 Part 3 (minimal): server-side history toggle.
@@ -324,31 +330,44 @@ export function AssistantView() {
           )}
 
           <section
-            aria-label="Assistant conversation"
-            className="flex h-[640px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-soft"
-          >
-            <ConversationList
-              conversation={visibleConversation}
-              isThinking={isBusy}
-              hasMessages={hasMessages}
-            />
-            <div className="flex flex-col gap-3 border-t border-border bg-background/30 p-3 sm:p-4">
-              <SuggestedQuestions
-                questions={suggestedQuestions}
-                onSelect={submitSuggested}
-                disabled={isBusy}
-              />
-              <PromptInput
-                onSubmit={serverHistory ? handleServerSubmit : submit}
-                disabled={isBusy}
-                placeholder={
-                  isBusy
-                    ? "Composing answer…"
-                    : "Ask about your business…"
-                }
-              />
-            </div>
-          </section>
+                      aria-label="Assistant conversation"
+                      className="flex h-[640px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-soft"
+                    >
+                      <ConversationToolbar
+                        conversation={visibleConversation}
+                        search={searchConversation}
+                        exportConversation={exportConversation}
+                        businessName={bundle.twin.identity.legal_name}
+                      />
+                      <ConversationList
+                        conversation={visibleConversation}
+                        isThinking={isBusy}
+                        hasMessages={hasMessages}
+                        memoryTopics={memoryTopics}
+                        onFollowUp={(label) => submit(label)}
+                      />
+                      <div className="flex flex-col gap-3 border-t border-border bg-background/30 p-3 sm:p-4">
+                        <SmartFollowUps
+                          followUps={smartFollowUps}
+                          onSelect={(f) => submit(f.prompt)}
+                          disabled={isBusy}
+                        />
+                        <SuggestedQuestions
+                          questions={suggestedQuestions}
+                          onSelect={submitSuggested}
+                          disabled={isBusy}
+                        />
+                        <PromptInput
+                          onSubmit={serverHistory ? handleServerSubmit : submit}
+                          disabled={isBusy}
+                          placeholder={
+                            isBusy
+                              ? "Composing answer…"
+                              : "Ask about your business…"
+                          }
+                        />
+                      </div>
+                    </section>
 
           <aside
             aria-label="Business context"

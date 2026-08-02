@@ -89,7 +89,35 @@ SCHEMES_CATALOG: list[dict[str, Any]] = [
         "min_turnover": 200000.0,
         "max_turnover": 20000000.0,
     },
-]
+    {
+        "id": "scheme-mudra-shishu",
+        "name": "Pradhan Mantri MUDRA Yojana — Shishu Loan",
+        "description": "Working-capital loan up to ₹50,000 for early-stage micro-enterprises through PSU banks, NBFCs, and MFIs.",
+        "category": "Working Capital",
+        "priority": "High",
+        "benefits": ["Collateral-free up to ₹50,000", "Low interest (8-12% p.a.)", "No processing fee"],
+        "application_link": "https://www.mudra.org.in",
+        "target_industries": ["all"],
+        "min_turnover": 0.0,
+        "max_turnover": 500000.0,
+    },
+    {
+        "id": "scheme-nsic",
+        "name": "NSIC Integrated Small Enterprise Development Scheme",
+        "description": "Subsidy + technical services for MSMEs through the National Small Industries Corporation, including marketing support and export facilitation.",
+        "category": "Development & Support",
+        "priority": "Medium",
+        "benefits": ["Marketing development subsidy", "Export facilitation services", "Common Facility Centre access"],
+        "application_link": "https://www.nsic.co.in",
+        "target_industries": ["Manufacturing", "Service", "Trading"],
+        "min_turnover": 0.0,
+        "max_turnover": 50000000.0,
+    },
+]  # NOTE: Eligibility, sanctions, and subsidy amounts are subject to the
+# official authority's (Ministry of MSME / NSIC / SIDBI / Department of
+# Commerce) prevailing rules and budget availability. Matching scores are
+# computed by UrsBiz on this static dataset — they do not guarantee
+# approval or funding.
 
 
 class SchemeRecommendationEngine:
