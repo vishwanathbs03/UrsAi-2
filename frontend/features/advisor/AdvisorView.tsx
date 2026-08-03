@@ -719,9 +719,11 @@ function DecisionBoard({
 }) {
   const overall = Number(advisor.health_review.current_overall_score) || 0;
   const dnaMatch = Number(advisor.business_summary.dna_match) || 0;
-  const cashBuffer = aggregate?.funding.loan_readiness_score ?? 50;
+  // P0.4 — Do NOT fabricate 50 when aggregate is absent. Surface
+  // "Data unavailable" downstream instead of a fabricated mid-score.
+  const cashBuffer: number | null = aggregate?.funding?.loan_readiness_score ?? null;
   const funding = aggregate?.funding ?? null;
-  const exportReadiness = aggregate ? 70 : 50;
+  const exportReadiness: number | null = aggregate?.export_readiness?.score ?? null;
   // Growth recommendations carry a different shape (GrowthAdviceItem);
   // pre-compute the textual signals the decision builders need.
   const growthText = useMemo(() => {
@@ -739,6 +741,7 @@ function DecisionBoard({
         cashBuffer,
         fundingScore: funding?.loan_readiness_score ?? cashBuffer,
         overall,
+        aggregateKnown: aggregate != null,
       }),
     ],
     [overall, dnaMatch, cashBuffer, exportReadiness, growthText, funding],
@@ -832,13 +835,20 @@ function buildExpandDecision({
   growthText,
 }: {
   overall: number;
-  exportReadiness: number;
+  exportReadiness: number | null;
   growthText: string[];
 }): Decision {
+  // P0.4 — when export readiness is genuinely missing, do NOT
+  // pretend we know. The "expand" verdict is downgraded to WAIT
+  // with a "Data unavailable" reason.
   const exportHints = growthText.filter((t) =>
     /export|international|cross-border|iec/i.test(t),
   );
-  if (overall >= 60 && (exportReadiness >= 60 || exportHints.length > 0)) {
+  if (
+    exportReadiness != null &&
+    overall >= 60 &&
+    (exportReadiness >= 60 || exportHints.length > 0)
+  ) {
     return {
       title: "Should I Expand?",
       verdict: "YES",
@@ -882,11 +892,30 @@ function buildLoanDecision({
   cashBuffer,
   fundingScore,
   overall,
+  aggregateKnown,
 }: {
-  cashBuffer: number;
-  fundingScore: number;
+  cashBuffer: number | null;
+  fundingScore: number | null;
   overall: number;
+  /** When false, the funding card should NOT fabricate mid-scores
+   *  from absent aggregate data. */
+  aggregateKnown: boolean;
 }): Decision {
+  // P0.4 — When the aggregate report is absent we do NOT fabricate
+  // a 50 loan-readiness score. Surface a "Data unavailable" branch
+  // instead and steer the user toward completing the profile.
+  if (!aggregateKnown || fundingScore == null || cashBuffer == null) {
+    return {
+      title: "Should I Apply for a Loan?",
+      verdict: "WAIT",
+      headline: "Loan readiness not yet assessed — complete your business profile.",
+      reasoning: [
+        "Loan readiness score is unavailable from current data.",
+        "Complete your business profile to surface funding readiness.",
+      ],
+      signal: "neutral",
+    };
+  }
   if (fundingScore >= 65 && overall >= 50) {
     return {
       title: "Should I Apply for a Loan?",

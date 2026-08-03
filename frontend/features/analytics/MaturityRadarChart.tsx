@@ -1,5 +1,14 @@
 "use client";
 
+/**
+ * P0.3 — Maturity Radar.
+ *
+ * The previous version silently inserted `?? 50` when a pillar score
+ * was missing, presenting a fabricated mid-range value as a real
+ * measurement. The radar now shows "Not yet assessed" for missing
+ * pillars and renders the radar polygon only over known scores.
+ */
+
 import { DashboardCard } from "@/components/dashboard/DashboardCard";
 import { READINESS_KEYS, scoreByKey, type AnalyticsData } from "./use-analytics-data";
 
@@ -7,14 +16,25 @@ interface MaturityRadarChartProps {
   data: AnalyticsData;
 }
 
+interface PillarView {
+  title: string;
+  /** Null when the pillar score is genuinely missing. */
+  score: number | null;
+}
+
 export function MaturityRadarChart({ data }: MaturityRadarChartProps) {
-  const pillars = READINESS_KEYS.map((key) => {
+  const pillars: PillarView[] = READINESS_KEYS.map((key) => {
     const s = scoreByKey(data.twin, key);
+    const raw = s?.score;
     return {
       title: s?.title || key,
-      score: s?.score ?? 50,
+      score:
+        typeof raw === "number" && Number.isFinite(raw) ? raw : null,
     };
   });
+
+  const knownPillars = pillars.filter((p) => p.score !== null);
+  const allMissing = knownPillars.length === 0;
 
   const center = 100;
   const radius = 70;
@@ -28,14 +48,18 @@ export function MaturityRadarChart({ data }: MaturityRadarChartProps) {
     return { x, y };
   };
 
-  const points = pillars.map((p, i) => getCoordinates(i, p.score));
-  const pathString = points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`).join(" ") + " Z";
+  const points = pillars.map((p, i) =>
+    p.score === null ? { x: center, y: center } : getCoordinates(i, p.score),
+  );
+  const pathString =
+    points.map((pt, i) => `${i === 0 ? "M" : "L"} ${pt.x} ${pt.y}`).join(" ") + " Z";
 
   return (
     <DashboardCard
       badge="Maturity Radar"
       title="Business Maturity Radar"
       caption="6-pillar operational maturity across Financial, Operations, Digital, Compliance, Export, & Innovation."
+      data-testid="maturity-radar-chart"
     >
       <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
         <svg viewBox="0 0 200 200" className="h-52 w-52 max-w-full">

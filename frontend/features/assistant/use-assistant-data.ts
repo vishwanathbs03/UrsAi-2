@@ -44,6 +44,7 @@ import type {
   TwinResponse,
 } from "@/types/analytics";
 import { buildAssistantResponse, type AssistantBundle } from "./builder";
+import { buildConsultantResponse } from "./consultant";
 import { classifyQuery } from "./classify-query";
 import {
   SUGGESTED_QUESTIONS,
@@ -386,11 +387,58 @@ export function useAssistantData(): UseAssistantDataResult {
 
   // Build the assistant reply for a given prompt. The response
   // is computed synchronously because every input is local —
-  // there is no network call inside `buildAssistantResponse`.
+  // there is no network call inside either `buildConsultantResponse`
+  // or the legacy `buildAssistantResponse`.
+  //
+  // Sprint H5.3 — the default local path now uses the H4
+  // Consultant orchestrator. Only fall back to the legacy body
+  // builder when (a) the consultant throws / returns an unusable
+  // payload, or (b) the bundle is missing a required field.
+  // The legacy path is NEVER the silent default — any fallback is
+  // explicit and logged.
   const buildReply = useCallback(
-    (bundle: AssistantBundle, kind: QueryKind): AssistantResponse =>
-      buildAssistantResponse(bundle, kind),
-    [],
+    (bundle: AssistantBundle, kind: QueryKind, prompt: string): AssistantResponse => {
+      try {
+        const consultant = buildConsultantResponse({
+          bundle,
+          prompt,
+          kind,
+          topic: topicForKind(kind),
+          recentTopics: memory.topicsAnswered,
+        });
+        // Sanity guard: a usable consultant payload has at least
+        // one section AND a non-empty body. If a router returns an
+        // empty shell, fall through to the legacy builder.
+        if (
+          consultant &&
+          Array.isArray(consultant.sections) &&
+          consultant.sections.length > 0 &&
+          typeof consultant.body === "string" &&
+          consultant.body.trim().length > 0
+        ) {
+          // Mirror the legacy AssistantResponse shape so the
+          // existing ChatMessage (`reply.body` / `reply.sources`
+          // / `reply.kind`) keeps working, AND attach the H4
+          // consultant payload via ChatMessage.consultant for the
+          // ConsultantRenderer to pick up.
+          return {
+            body: consultant.body,
+            sources: consultant.sources,
+            kind: consultant.kind,
+            consultant,
+          };
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[assistant] buildConsultantResponse failed, falling back to legacy builder:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      // Legacy fallback — explicit and rare. Not the silent default.
+      return buildAssistantResponse(bundle, kind);
+    },
+    [memory.topicsAnswered],
   );
 
   const submit = useCallback(
@@ -427,7 +475,7 @@ export function useAssistantData(): UseAssistantDataResult {
       });
       // Use queueMicrotask so the user message renders first.
       queueMicrotask(() => {
-        const reply = buildReply(state.bundle, kind);
+        const reply = buildReply(state.bundle, kind, userMsg.content);
         const assistantMsg: ChatMessage = {
           id: makeId("a"),
           role: "assistant",
@@ -435,6 +483,9 @@ export function useAssistantData(): UseAssistantDataResult {
           createdAt: nowIso(),
           sources: reply.sources,
           kind: reply.kind,
+          // Attach the H4 consultant payload (when present) so
+          // MessageBubble routes through ConsultantRenderer.
+          consultant: reply.consultant,
         };
         setConversation((prev) => ({
           ...prev,

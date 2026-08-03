@@ -48,7 +48,7 @@ class InsightsService:
         findings = [
             f"Business operates in {ind} with {years} years of operational history.",
             f"Current employee headcount stands at {emp} personnel.",
-            f"Annual revenue baseline calculated at ${rev:,.2f} USD.",
+            f"Annual revenue baseline calculated at {rev:,.2f} (currency from business profile).",
         ]
 
         # 2. Positive Observations

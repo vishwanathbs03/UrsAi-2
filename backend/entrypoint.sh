@@ -36,7 +36,7 @@ APP_HOST="${APP_HOST:-0.0.0.0}"
 APP_PORT="${APP_PORT:-8000}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
-log "starting atlas-ai backend"
+log "starting UrsBiz backend"
 log "  app_module=${APP_MODULE}"
 log "  workers=${GUNICORN_WORKERS} threads=${GUNICORN_THREADS} timeout=${GUNICORN_TIMEOUT}s"
 log "  bind=${APP_HOST}:${APP_PORT}"
@@ -45,7 +45,7 @@ log "  log_level=${LOG_LEVEL}"
 # Make sure the writable volumes are present. compose creates them,
 # but `docker run --rm` without a volume mount would otherwise fail
 # at the first SQLAlchemy connect.
-mkdir -p /var/log/atlas-ai /var/lib/atlas-ai
+mkdir -p /var/log/ursbiz /var/lib/ursbiz
 
 # Pre-import the app so config / migration errors surface BEFORE
 # gunicorn forks workers. APP_MODULE is "package.module:attr" so

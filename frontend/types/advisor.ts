@@ -193,6 +193,9 @@ export interface FundingReport {
   grant_eligibility_score: number;
   msme_schemes: string[];
   funding_checklist: FundingChecklistItem[];
+  /** When false, the advisor view shows "Not yet assessed" for the
+   *  funding-related scores and recommends completing the profile. */
+  profile_complete?: boolean;
 }
 
 export interface ComplianceItem {
@@ -215,6 +218,10 @@ export interface AdvisorAggregateReport {
   growth: GrowthAdvisorReport;
   funding: FundingReport;
   compliance: ComplianceReport;
+  /** Optional export-readiness signal — null means we do not have
+   *  a real export-readiness score, and the decision board should
+   *  render "Data unavailable" instead of a fabricated mid-score. */
+  export_readiness?: { score: number | null } | null;
 }
 
 export interface AdvisorAggregateResponse {

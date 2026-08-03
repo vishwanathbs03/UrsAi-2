@@ -72,10 +72,16 @@ export const BusinessHealth: React.FC<BusinessHealthProps> = ({ intelligence }) 
 
   if (!intelligence) return null;
 
+  // P0.8 — Do NOT silently coerce a missing health score to 0.
+  // When the score is absent we render the "Not yet assessed" state
+  // instead of presenting a 0 as a legitimate measurement.
   const overall = intelligence.overall;
-  const score = overall?.score ?? 0;
+  const score: number | null =
+    overall && typeof overall.score === "number" && Number.isFinite(overall.score)
+      ? overall.score
+      : null;
   const level = overall?.level;
-  const grade = gradeFromLevel(level);
+  const grade = score != null ? gradeFromLevel(level) : "—";
 
   // Try to find a history series in the payload. If absent or empty,
   // we DO NOT fabricate a trend — we explicitly say so.
@@ -110,17 +116,21 @@ export const BusinessHealth: React.FC<BusinessHealthProps> = ({ intelligence }) 
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Overall Health Score
           </span>
-          <div className="text-6xl font-extrabold leading-none text-card-foreground">{score}</div>
+          <div className="text-6xl font-extrabold leading-none text-card-foreground">
+            {score == null ? "—" : score}
+          </div>
           <div className="flex items-center gap-2 text-xs">
             <span className="rounded-full border border-border bg-card px-2 py-0.5 font-bold">
               Grade {grade}
             </span>
             <span className="rounded-full border border-border bg-card px-2 py-0.5 font-medium">
-              {levelLabel(level)}
+              {score == null ? "Not yet assessed" : levelLabel(level)}
             </span>
           </div>
           <p className="mt-1 max-w-[14rem] text-center text-xs text-muted-foreground">
-            {statusCopy(level)}
+            {score == null
+              ? "Complete your business profile to surface a health score."
+              : statusCopy(level)}
           </p>
         </div>
 

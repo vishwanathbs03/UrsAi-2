@@ -242,11 +242,11 @@ export function DashboardView() {
               </Button>
             </div>
           </div>
-          <KPIGrid kpis={null} />
-          <p className="pt-1 text-center text-[11px] italic text-muted-foreground">
-            All values shown are derived from your live business profile and the rule engine.
-            Where data is unavailable, the page explicitly says so — never fabricated.
-          </p>
+          {/* P0.13 — KPIGrid was wired with kpis={null}, rendering
+              "N/A" placeholder cards. Removed from the Command Center
+              because the widget is not connected to a real data
+              source. Reusable widget still exported for other routes
+              that have a real KPI payload. */}
         </section>
       </main>
     </PageContainer>

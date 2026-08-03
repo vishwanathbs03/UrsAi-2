@@ -200,14 +200,25 @@ def run_alembic_upgrade(target: str = "head") -> None:
     command.upgrade(cfg, target)
 
 
+# Stable 64-bit key for the UrsBiz deployment's cross-process
+# schema-bootstrap advisory lock. Picked once, baked into the
+# code; not user-tunable. Postgres treats the value as int8.
+_PG_BOOTSTRAP_ADVISORY_KEY = 0x55525342_49545F31  # 'URSBIT_1'
+
+
 def bootstrap_schema(engine: Engine | None = None) -> bool:
     """Ensure the schema is at the head revision.
 
-    The function is idempotent and thread-safe:
+    The function is idempotent and safe under multi-worker contention:
 
-      * Safe to call from every gunicorn worker. The threading
-        lock plus the per-URL done-set mean the work happens
-        exactly once per process.
+      * Safe to call from every gunicorn worker in the same process
+        (threading.Lock + per-URL done-set make it a no-op after the
+        first call in this process).
+      * Safe to call across processes on PostgreSQL — the function
+        tries to take a session-level ``pg_advisory_lock`` keyed on
+        the canonical UrsBiz deployment so two gunicorn workers
+        cannot race to upgrade the schema. Workers that fail to
+        acquire the lock back off and retry once.
       * Reads the ``alembic_version`` table — the canonical record
         of the migration state — and brings the database forward
         to ``head`` if needed.
@@ -229,39 +240,76 @@ def bootstrap_schema(engine: Engine | None = None) -> bool:
         if key in _bootstrap_done:
             return False
 
-        current = get_current_revision(eng)
-        missing = get_missing_tables(eng)
-        if current == EXPECTED_HEAD_REVISION and not missing:
-            # No work to do, but record the per-URL done flag so
-            # subsequent workers on the same DB skip the probe.
-            _bootstrap_done.add(key)
-            return False
+        # Cross-process lock — Postgres only. SQLAlchemy gives us a
+        # connection per advisory-lock acquire so the lock is held
+        # for the duration of the bootstrap work and released on
+        # connection close. SQLite has no equivalent; the in-process
+        # done-set above is the only safety the SQLite path gets.
+        # We hold the SAME connection open across the schema check
+        # and the alembic upgrade so a second worker cannot race
+        # in between.
+        if eng.dialect.name == "postgresql":
+            with eng.connect() as conn:
+                acquired = conn.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"),
+                    {"k": _PG_BOOTSTRAP_ADVISORY_KEY},
+                ).scalar()
+                if not acquired:
+                    raise RuntimeError(
+                        "could not acquire pg_advisory_lock for schema bootstrap; "
+                        "another worker is already upgrading this database"
+                    )
+                logger.info(
+                    "bootstrap_schema: acquired pg_advisory_lock key=%s",
+                    _PG_BOOTSTRAP_ADVISORY_KEY,
+                )
+                return _bootstrap_schema_inner(eng, conn)
 
-        if current == EXPECTED_HEAD_REVISION and missing:
-            # The alembic_version row says we are at head, but
-            # the actual schema is missing one or more tables.
-            # This is the "partial schema treated as complete"
-            # failure mode item 6 of the brief describes. The
-            # migration history will not re-apply because the
-            # recorded revision matches the head, so the only
-            # safe way to repair is ``Base.metadata.create_all``,
-            # which is idempotent (``CREATE TABLE IF NOT
-            # EXISTS`` is the default for create_all) and only
-            # emits DDL for tables that are not present.
-            logger.warning(
-                "bootstrap_schema: partial schema detected — running create_all to repair: missing=%s",
-                missing,
-            )
-            Base.metadata.create_all(eng)
-            _bootstrap_done.add(key)
-            return True
+        return _bootstrap_schema_inner(eng, None)
 
+
+def _bootstrap_schema_inner(eng: Engine, _pg_lock_conn) -> bool:
+    """Inner schema-bootstrap body.
+
+    Split out so the Postgres path can run it inside the same
+    connection that holds the ``pg_advisory_lock``. ``_pg_lock_conn``
+    is unused on the SQLite path; it carries the lock holder on the
+    Postgres path. Returns ``True`` when at least one migration /
+    repair was applied.
+    """
+    current = get_current_revision(eng)
+    missing = get_missing_tables(eng)
+    if current == EXPECTED_HEAD_REVISION and not missing:
+        # No work to do, but record the per-URL done flag so
+        # subsequent workers on the same DB skip the probe.
+        _bootstrap_done.add(str(eng.url))
+        return False
+
+    if current == EXPECTED_HEAD_REVISION and missing:
+        # The alembic_version row says we are at head, but
+        # the actual schema is missing one or more tables.
+        # This is the "partial schema treated as complete"
+        # failure mode item 6 of the brief describes. The
+        # migration history will not re-apply because the
+        # recorded revision matches the head, so the only
+        # safe way to repair is ``Base.metadata.create_all``,
+        # which is idempotent (``CREATE TABLE IF NOT
+        # EXISTS`` is the default for create_all) and only
+        # emits DDL for tables that are not present.
         logger.warning(
-            "bootstrap_schema: current=%s expected=%s missing_tables=%s — running alembic upgrade",
-            current or "<none>",
-            EXPECTED_HEAD_REVISION,
-            missing or "[]",
+            "bootstrap_schema: partial schema detected — running create_all to repair: missing=%s",
+            missing,
         )
-        run_alembic_upgrade("head")
-        _bootstrap_done.add(key)
+        Base.metadata.create_all(eng)
+        _bootstrap_done.add(str(eng.url))
         return True
+
+    logger.warning(
+        "bootstrap_schema: current=%s expected=%s missing_tables=%s — running alembic upgrade",
+        current or "<none>",
+        EXPECTED_HEAD_REVISION,
+        missing or "[]",
+    )
+    run_alembic_upgrade("head")
+    _bootstrap_done.add(str(eng.url))
+    return True

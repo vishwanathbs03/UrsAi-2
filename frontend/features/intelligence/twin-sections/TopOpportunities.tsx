@@ -58,17 +58,26 @@ function horizonLabel(category: string | null | undefined, difficulty: string): 
   return "3–6 months";
 }
 
-function formatScenario(value: number, currency: string): string {
-  // Scenario language: never guarantee.
+/**
+ * P0.7 — Currency is no longer forced to USD. We derive the symbol
+ * from the payload's currency when present, and otherwise render a
+ * neutral label so the user is never silently assumed to operate in
+ * USD.
+ */
+function formatScenario(value: number, currency: string | null): string {
   if (!value || value <= 0) return "Potential value not yet quantified";
-  return `Potential path to ${currency === "USD" ? "$" : "₹"}${value.toLocaleString()} ${currency} if executed`;
+  if (!currency) {
+    return `Potential path to ${value.toLocaleString()} (currency unspecified) — scenario estimate`;
+  }
+  const symbol = currency === "USD" ? "$" : currency === "INR" ? "₹" : "";
+  return `Potential path to ${symbol}${value.toLocaleString()} ${currency} if executed — scenario estimate`;
 }
 
 export const TopOpportunities: React.FC<TopOpportunitiesProps> = ({ intelligence }) => {
   if (!intelligence) return null;
   const report = intelligence.opportunities;
   const items = pick(report?.opportunities);
-  const currency = report?.total_estimated_value != null && report?.total_count != null ? "USD" : "USD";
+  const currency = report?.currency ?? null;
 
   return (
     <section

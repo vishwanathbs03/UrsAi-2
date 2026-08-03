@@ -10,8 +10,15 @@ Each opportunity contains:
   * priority (Critical, High, Medium, Low)
   * impact (High, Medium, Low)
   * difficulty (Easy, Medium, Hard)
-  * estimated_value (float USD)
+  * estimated_value (float, scenario estimate — currency = business's
+    currency; treated as illustrative opportunity value, NOT
+    expected revenue or guaranteed outcome)
   * category (export, digital, compliance, operations, financial)
+
+P0.6 — fixed estimated_value floors are now explicitly labelled as
+scenario estimates. They are NOT expected revenue or guaranteed
+income. The frontend renders them as "Illustrative opportunity
+value" / "Modelled potential".
 """
 
 from __future__ import annotations

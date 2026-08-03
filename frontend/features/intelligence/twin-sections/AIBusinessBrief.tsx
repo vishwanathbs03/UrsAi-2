@@ -134,9 +134,20 @@ export const AIBusinessBrief: React.FC<AIBusinessBriefProps> = ({
 
   // Sentence 3 — biggest opportunity (1 sentence).
   if (topOpp) {
+    // P0.7 — currency is no longer forced to USD. Use the
+    // payload's currency or render a neutral label so we never
+    // silently assume USD.
+    const currency = intelligence.opportunities?.currency ?? null;
+    const symbol = currency === "USD" ? "$" : currency === "INR" ? "₹" : "";
     const oppVal =
       topOpp.estimated_value > 0
-        ? `, with a modelled value of $${topOpp.estimated_value.toLocaleString()} ${topOpp.impact.toLowerCase() === "high" ? "if executed" : "subject to execution"}`
+        ? currency
+          ? `, with a modelled value of ${symbol}${topOpp.estimated_value.toLocaleString()} ${currency} (scenario estimate, ${
+              topOpp.impact.toLowerCase() === "high" ? "if executed" : "subject to execution"
+            })`
+          : `, with a modelled value of ${topOpp.estimated_value.toLocaleString()} (currency unspecified, scenario estimate, ${
+              topOpp.impact.toLowerCase() === "high" ? "if executed" : "subject to execution"
+            })`
         : "";
     sentences.push(
       `The biggest opportunity on the table right now is ${topOpp.title.toLowerCase()}${oppVal}.`,
@@ -145,7 +156,12 @@ export const AIBusinessBrief: React.FC<AIBusinessBriefProps> = ({
 
   // Sentence 4 — most important next action (1 sentence).
   if (topAction) {
-    const gain = topAction.estimated_score_gain > 0 ? `, expected to add ${topAction.estimated_score_gain} points` : "";
+    // P0.9 — replace "expected to add X points" with explicit
+    // "modelled to add up to X points under current rules".
+    const gain =
+      topAction.estimated_score_gain > 0
+        ? `, modelled to add up to ${topAction.estimated_score_gain} points under current rules (based on current data)`
+        : "";
     sentences.push(
       `The single most important next action is to ${topAction.title.toLowerCase()}${gain}.`,
     );

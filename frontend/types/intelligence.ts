@@ -77,6 +77,9 @@ export interface OpportunityReport {
   total_count: number;
   total_estimated_value: number;
   opportunities: OpportunityItem[];
+  /** ISO currency code (e.g. "INR", "USD"); null/undefined means
+   *  the currency is unspecified and the UI must NOT assume USD. */
+  currency?: string | null;
 }
 
 export interface FullBusinessIntelligencePayload {

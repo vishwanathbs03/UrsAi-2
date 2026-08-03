@@ -104,3 +104,23 @@ generate_project_structure_pdf.py
 Thumbs.db
 Desktop.ini
 ehthumbs.db
+
+# ----------------------- H5.5 Sprint Cleanup --------------------- #
+# Windows absolute-path leaks (H5.5 — leaked from a previous
+# verifier running under MSYS). Treat any directory named `c/` or
+# `tmp/` under `frontend/` as generated build output, NOT source.
+frontend/c/
+frontend/tmp/
+
+# Catch-all for ANY tmp/build/dist directory anywhere in the tree.
+# These are verifier or build outputs and must never be tracked.
+**/tmp/
+**/build/
+**/dist/
+**/__pycache__/
+
+# Bundled verifier outputs (esbuild / tsc / node --inspect).
+*.bundle.js
+*.cjs
+!scripts/**/*.cjs   # legitimate cjs scripts under scripts/ are OK
+!frontend/**/*.cjs  # legitimate cjs modules under frontend/ are OK

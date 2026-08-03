@@ -1,10 +1,18 @@
 """Industry Benchmark Engine — Sprint 11.5.
 
-Compares business profile metrics against industry baseline benchmarks:
-  * industry_average
+Compares business profile metrics against INTERNAL ILLUSTRATIVE
+BASELINES (P0.5 — not external industry averages, not market
+benchmarks, not top-performer percentiles). The constants below
+are internal reference baselines used to provide a directional
+view of where a business sits relative to a plausible
+illustrative peer set. They are NOT validated against any
+external dataset.
+
+Returns:
+  * industry_average   (INTERNAL_ILLUSTRATIVE_BASELINE)
   * user_score
   * difference
-  * percentile
+  * percentile         (illustrative, not top-performer)
   * benchmark_grade
 """
 
@@ -21,6 +29,10 @@ from app.schemas.benchmark import (
 )
 from app.services.readiness_service import ReadinessService
 
+# P0.5 — these constants are INTERNAL ILLUSTRATIVE BASELINES, not
+# external industry averages. They are not validated against any
+# external dataset and must be presented as "Illustrative baseline"
+# or "Internal reference baseline" in user-facing surfaces.
 INDUSTRY_DEFAULTS = {
     "Information Technology": {"digital": 85.0, "employees": 20.0, "revenue": 500000.0, "certs": 2.0},
     "Software & AI": {"digital": 90.0, "employees": 15.0, "revenue": 450000.0, "certs": 2.0},

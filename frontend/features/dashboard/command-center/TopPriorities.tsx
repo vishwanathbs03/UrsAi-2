@@ -111,12 +111,16 @@ export const TopPriorities: React.FC<TopPrioritiesProps> = ({ recommendations, b
                 <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">{rec.priority}</span>
               </div>
               <h3 className="text-sm font-bold text-foreground">{rec.title}</h3>
-              <p className="text-xs leading-relaxed text-muted-foreground">{rec.description || rec.category || ""}</p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{rec.description || rec.category || ""}</p>
               <dl className="mt-1 grid grid-cols-2 gap-y-1.5 text-[11px] text-muted-foreground">
                 <dt className="font-semibold">Why now</dt>
-                <dd className="text-foreground">Score gap of {100 - (rec.estimated_score_gain || 0)}/100 remaining.</dd>
+                <dd className="text-foreground">
+                  {rec.priority === "Critical" || rec.priority === "High"
+                    ? `High priority and aligned with your weakest dimension.`
+                    : `Aligned with an actionable dimension in your profile.`}
+                </dd>
                 <dt className="font-semibold">Impact</dt>
-                <dd className="text-foreground">{gain || "—"}</dd>
+                <dd className="text-foreground">{gain || "Modelled score contribution: see recommendation"}</dd>
                 <dt className="font-semibold">Difficulty</dt>
                 <dd className="text-foreground">{rec.difficulty || "—"}</dd>
                 <dt className="font-semibold">Time</dt>

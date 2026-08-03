@@ -15,12 +15,23 @@ export function FundingCard({ report }: FundingCardProps) {
       badge="Capital & Funding"
       title="Funding Readiness & Government MSME Schemes"
       caption="Evaluated bank loan readiness, equity investor appeal, and applicable government subsidy schemes."
+      data-testid="funding-card"
     >
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <ScoreTile label="Loan Readiness" score={report.loan_readiness_score} />
         <ScoreTile label="Investor Readiness" score={report.investor_readiness_score} />
         <ScoreTile label="Grant Eligibility" score={report.grant_eligibility_score} />
       </div>
+
+      {!report.profile_complete && (
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <HelpCircle className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <p>
+            Some scores show <span className="font-semibold text-foreground/90">Not yet assessed</span> —
+            complete your business profile to surface the full funding picture.
+          </p>
+        </div>
+      )}
 
       <div className="mt-4 flex flex-col gap-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">

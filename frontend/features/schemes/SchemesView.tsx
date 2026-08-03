@@ -114,11 +114,29 @@ export function SchemesView() {
         </DashboardCard>
 
         {filteredSchemes.length === 0 ? (
-          <EmptyState
-            illustration="building"
-            title="No matching schemes found"
-            description="Try adjusting your search criteria or category filter."
-          />
+          // P0.12 — distinguish "no schemes returned" from
+          // "no matching scheme for the current filter".
+          // Service error is already handled above via ErrorState.
+          allSchemes.length === 0 ? (
+            <EmptyState
+              illustration="building"
+              title="No schemes returned"
+              description="The scheme engine returned no schemes for the current business profile. This may be a transient state or the profile may need more detail."
+              actionLabel="Refresh"
+              onAction={() => void refetch()}
+            />
+          ) : (
+            <EmptyState
+              illustration="building"
+              title="No matching schemes for this filter"
+              description="Schemes are available, but none match the current search or category filter. Try adjusting your criteria."
+              actionLabel="Clear filters"
+              onAction={() => {
+                setSearch("");
+                setCategoryFilter("all");
+              }}
+            />
+          )
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {filteredSchemes.map((scheme) => (
