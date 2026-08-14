@@ -167,6 +167,15 @@ _HARD_TIMEOUT_EXECUTOR = ThreadPoolExecutor(
 )
 
 
+# SPRINT AI-8 — the hard cap on LLM-initiated tool-loop turns.
+# The LLM is allowed exactly ONE follow-up turn so it can
+# explain the verified facts returned by the deterministic
+# engines. A malicious or buggy LLM that loops indefinitely
+# is bounded at this number — the service short-circuits to
+# the first-turn response on overflow.
+_MAX_TOOL_LOOP_TURNS: int = 2
+
+
 def _call_with_hard_timeout(
     provider: Any, request: AssistantRequest, timeout: float
 ) -> AssistantResponse:
@@ -225,11 +234,20 @@ class AssistantProviderService:
         reasoning_engine: Any | None = None,
         evidence_retriever: Any | None = None,
         tool_dispatcher: Any | None = None,
+        tool_router: Any | None = None,
     ) -> None:
         self._context_builder = context_builder
         self._prompt_builder = prompt_builder or AssistantPromptBuilder()
         self._factory = provider_factory or ProviderFactory()
         self._circuit_breaker = AICircuitBreaker(name="gemini")
+        # SPRINT AI-8 — the optional LLM-tool-request router.
+        # When ``None`` (default) the provider behaves exactly
+        # like today: the AI-1 ``ToolDispatcher`` runs the
+        # server-selected tool calls; the LLM never requests
+        # new ones. When present, the service hands it to the
+        # 2nd-turn ``_maybe_run_tool_loop`` so the LLM can ask
+        # the deterministic engines for more data.
+        self._tool_router = tool_router
         # H8.11 — pre-LLM reasoning layer. The engine runs
         # the intent classifier + the H8.3 pipeline; the
         # retriever ranks the evidence registry. Both are
@@ -319,6 +337,19 @@ class AssistantProviderService:
         reasoning_plan = None
         ranked_evidence = None
         tool_results: tuple = ()
+        # SPRINT AI-13 — the AI-12 ``DispatchOutcome`` carries
+        # the plan + results + envelopes + traces. The
+        # conversation service stamps the plan, envelopes,
+        # and traces onto the audit row. Backward-compat is
+        # preserved by deriving ``tool_results`` from the
+        # outcome's ``.results`` tuple so every downstream
+        # consumer (legacy ``tool_results`` block, the
+        # prompt builder, the answer composer, the
+        # GenerationMeta stamper) keeps working unchanged.
+        from app.services.ai.reasoning.tool_selector import (
+            DispatchOutcome as _DispatchOutcome,
+        )
+        dispatch_outcome: _DispatchOutcome | None = None
         adaptive_answer = None
         try:
             question_understanding = understand_question(
@@ -355,12 +386,20 @@ class AssistantProviderService:
             # ``self._tool_dispatcher`` is the dispatcher
             # passed in via the constructor (or a default
             # stub-only dispatcher when no kwarg was given).
-            tool_results = self._tool_dispatcher.dispatch(
+            # SPRINT AI-13 — use ``dispatch_with_plan`` so the
+            # production path emits the ToolPlan +
+            # StructuredToolEnvelope + ToolExecutionTrace
+            # bundle. The legacy ``.dispatch`` is a thin wrapper
+            # over ``dispatch_with_plan``; the live cutover
+            # means we read plan / envelopes / traces from
+            # the same outcome.
+            dispatch_outcome = self._tool_dispatcher.dispatch_with_plan(
                 owner_id=owner_id,
                 question_understanding=question_understanding,
                 reasoning_plan=reasoning_plan,
                 context=context,
             )
+            tool_results = dispatch_outcome.results
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[service] AI-1 universal-assistant layers failed; "
@@ -370,6 +409,7 @@ class AssistantProviderService:
             question_understanding = None
             reasoning_plan = None
             ranked_evidence = None
+            dispatch_outcome = None
             tool_results = ()
 
         # AI-1 — internal ``_effective_mode``. The wire
@@ -496,6 +536,44 @@ class AssistantProviderService:
         # drives which validator pipeline runs; the wire
         # ``mode`` (the user's pick) is preserved on the
         # GenerationMeta so the trust label stays truthful.
+        #
+        # SPRINT AI-8 — controlled tool-loop hookup. If the
+        # router is wired AND the 1st-turn payload carries
+        # ``tool_calls``, run the 6-step pipeline, get a
+        # 2nd-turn explanation, and overwrite the
+        # ``response`` before the grounded-path finaliser
+        # runs. The 2nd-turn GenerationMeta carries the
+        # ``llm_tool_results`` stamp. The legacy path is
+        # unchanged when no router is configured or when
+        # the LLM emitted no tool calls.
+        if effective_mode != "open" and getattr(self, "_tool_router", None) is not None:
+            try:
+                from app.services.ai.providers.response_schema import (
+                    parse_model_output,
+                )
+                first_turn = parse_model_output(response.body or "")
+                if (
+                    first_turn.ok
+                    and first_turn.response is not None
+                    and getattr(first_turn.response, "tool_calls", ())
+                ):
+                    tool_loop = self._maybe_run_tool_loop(
+                        request=request,
+                        first_turn_parsed=first_turn.response,
+                        owner_id=owner_id,
+                        intent=_intent_for_request(
+                            question_understanding, request,
+                        ),
+                    )
+                    if tool_loop is not None and getattr(
+                        tool_loop, "response", None,
+                    ) is not None:
+                        response = tool_loop.response
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ai.provider.ai8_tool_loop_hookup_failed: %s", exc,
+                )
+
         if effective_mode == "open":
             return self._generate_open(
                 request, response,
@@ -504,6 +582,7 @@ class AssistantProviderService:
                 tool_results=tool_results,
                 wire_mode=mode,
                 adaptive_answer_out=adaptive_answer,
+                dispatch_outcome=dispatch_outcome,
             )
         return self._generate_grounded(
             request,
@@ -514,9 +593,645 @@ class AssistantProviderService:
             tool_results=tool_results,
             wire_mode=mode,
             adaptive_answer_out=adaptive_answer,
+            dispatch_outcome=dispatch_outcome,
         )
 
     # ---- mode-specific finalisers ---------------------------------- #
+
+    # SPRINT AI-8 — controlled tool-loop entry point.
+    #
+    # If the LLM's 1st-turn payload carries ``tool_calls`` and
+    # the router was wired at construction time, dispatch
+    # each tool via the 6-step pipeline, format the
+    # sanitised results into a 2nd-turn prompt, and ask the
+    # LLM to *explain* the verified facts. The 2nd-turn prose
+    # replaces the 1st-turn prose on the user-visible ``body``;
+    # ``llm_tool_results`` is stamped on the GenerationMeta so
+    # the audit trail keeps the original tool transcripts.
+    #
+    # Return value: a small dataclass-y ``SimpleNamespace``
+    # with ``response`` (the updated AssistantResponse) +
+    # ``parsed`` (the 2nd-turn GroundedResponse, or the
+    # first-turn one when the loop short-circuits) +
+    # ``results`` (the tuple of LLMToolResult). ``None``
+    # when the router was not configured or the LLM emitted
+    # no tool calls — the caller falls through to the legacy
+    # 1st-turn path.
+    def _maybe_run_tool_loop(
+        self,
+        *,
+        request: Any,
+        first_turn_parsed: Any,
+        owner_id: int,
+        intent: str,
+    ) -> Any | None:
+        try:
+            router = getattr(self, "_tool_router", None)
+        except Exception:  # noqa: BLE001
+            router = None
+        if router is None:
+            return None
+        tool_calls = tuple(getattr(first_turn_parsed, "tool_calls", ()) or ())
+        if not tool_calls:
+            return None
+
+        # Lazy imports to avoid module-load cycles.
+        try:
+            from app.services.ai.tool_router.types import (
+                LLMToolRequest,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ai.provider.ai8_router_import_failed: %s", exc,
+            )
+            return None
+
+        # Build LLMToolRequest instances. Each becomes
+        # exactly one router call. We tolerate malformed
+        # entries defensively — anything the router rejects
+        # comes back as ``status="error"`` and the LLM
+        # sees the rejection reason on the 2nd turn.
+        llm_requests: list[LLMToolRequest] = []
+        for entry in tool_calls:
+            try:
+                llm_requests.append(
+                    LLMToolRequest(
+                        tool=str(entry.get("tool") or ""),
+                        arguments=dict(entry.get("arguments") or {}),
+                        reason=str(entry.get("reason") or ""),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info(
+                    "ai.provider.ai8_malformed_tool_call: %s", exc,
+                )
+
+        if not llm_requests:
+            return None
+
+        # Run the 6-step pipeline. NEVER raises.
+        try:
+            results = router.route_all(
+                llm_requests, owner_id=owner_id, intent=intent,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive fence
+            logger.warning(
+                "ai.provider.ai8_router_unexpected_failure: %s", exc,
+            )
+            return None
+
+        # Build a 2nd-turn prompt by appending a "TOOL
+        # RESULTS" section to the original user-message
+        # block. This is a small, explicit
+        # "explain-the-verified-facts" ask — the LLM does
+        # NOT need to emit further tool_calls and is told
+        # so explicitly.
+        try:
+            from app.services.ai.providers.base import GenerationMeta
+
+            explanation_turn = self._build_tool_explanation_prompt(
+                original_request=request,
+                first_turn_parsed=first_turn_parsed,
+                tool_results=results,
+            )
+            provider = self._resolve_provider(request=request, mode="grounded")
+            if provider is None:
+                return None
+            explanation_request = self._build_explanation_request(
+                request=request,
+                explanation_turn_text=explanation_turn,
+            )
+            explanation_response = provider.complete(explanation_request)
+            # Project the 2nd-turn prose into the user-visible
+            # ``body``. Defensive try/except — if anything
+            # in the 2nd-turn path raises, the chat falls
+            # back to the first-turn body unchanged.
+            from app.services.ai.providers.response_schema import (
+                parse_model_output,
+            )
+            second = parse_model_output(explanation_response.body or "")
+            if second.ok and second.response is not None:
+                # Use to_chat_body() to produce the
+                # Markdown rendering of the 2nd-turn
+                # structured envelope. This is the same
+                # renderer the provider returns for a normal
+                # grounded reply, so the shell sees a
+                # consistent shape.
+                from dataclasses import replace as _replace
+                explanation_response = _replace(
+                    explanation_response,
+                    body=second.response.to_chat_body(),
+                )
+                # Replace the 1st-turn parsed with the
+                # 2nd-turn parsed. The block above has
+                # already stamped ``direct_answer`` /
+                # ``executive_summary`` for downstream
+                # consumers (AI-5/6/7 wire stamps).
+                first_turn_parsed = second.response
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ai.provider.ai8_tool_loop_second_turn_failed: %s", exc,
+            )
+            # First-turn response stands. ``results`` are
+            # preserved on the audit envelope so the user
+            # still sees the pill row.
+            first_turn_parsed = first_turn_parsed
+            explanation_response = None
+
+        # Build the response: 2nd-turn body when available;
+        # 1st-turn body otherwise. GenerationMeta gains the
+        # llm_tool_results stamp.
+        from types import SimpleNamespace
+        from app.services.ai.providers.base import GenerationMeta
+
+        if explanation_response is None:
+            chosen_response = request  # placeholder; rebuilt below
+            # Fall through to the first-turn path.
+            chosen_response = None
+        else:
+            chosen_response = explanation_response
+
+        # If the 2nd-turn path failed, fall back to the
+        # first-turn body so the user always sees a reply.
+        if chosen_response is None:
+            return SimpleNamespace(
+                response=request,  # signal: caller keeps first-turn path
+                parsed=first_turn_parsed,
+                results=tuple(
+                    r.model_dump() for r in results
+                ),
+            )
+
+        # Stamp llm_tool_results on the response's
+        # GenerationMeta. If the 2nd-turn provider did not
+        # already populate one, build an empty envelope so
+        # downstream code can rely on the field existing.
+        try:
+            existing_meta = chosen_response.generation
+            if existing_meta is None:
+                existing_meta = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=chosen_response.provider_used,
+                    model=chosen_response.model,
+                    provider_latency_ms=chosen_response.provider_latency_ms,
+                    fallback_used=bool(chosen_response.fallback_used),
+                )
+            merged_meta = existing_meta.merge(
+                llm_tool_results=tuple(
+                    r.model_dump() for r in results
+                ),
+            )
+            from dataclasses import replace as _replace_response
+            chosen_response = _replace_response(
+                chosen_response, generation=merged_meta,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ai.provider.ai8_tool_loop_meta_stamp_failed: %s", exc,
+            )
+
+        return SimpleNamespace(
+            response=chosen_response,
+            parsed=first_turn_parsed,
+            results=tuple(
+                r.model_dump() if hasattr(r, "model_dump") else dict(r)
+                for r in results
+            ),
+        )
+
+    def _build_tool_explanation_prompt(
+        self,
+        *,
+        original_request: Any,
+        first_turn_parsed: Any,
+        tool_results: tuple,
+    ) -> str:
+        """Render the 2nd-turn "explain the verified facts" prompt.
+
+        Appends a structured "TOOL RESULTS" block to the
+        original user prompt. The block carries every
+        ``LLMToolResult`` in the same shape the LLM saw on
+        its 1st turn — status, evidence_ids, payload — so
+        it can quote them faithfully. Errors are surfaced
+        verbatim: the LLM is told to *narrate* them, never
+        *invent* data.
+        """
+        import json as _json
+        results_block = (
+            "=== TOOL RESULTS (server-resolved, sanitised) ===\n"
+            + _json.dumps(
+                [
+                    r.model_dump() if hasattr(r, "model_dump") else dict(r)
+                    for r in tool_results
+                ],
+                indent=2,
+                default=str,
+            )
+            + "\n=== END TOOL RESULTS ===\n"
+            "Using ONLY the data above, write the final user-visible "
+            "explanation. Cite the evidence_ids when you mention a fact. "
+            "If a tool returned status='error', narrate the rejection reason — "
+            "never invent a value. Do NOT emit further tool_calls.\n"
+        )
+        original = getattr(original_request, "user_prompt", "") or ""
+        return f"{original}\n\n{results_block}"
+
+    def _build_explanation_request(
+        self,
+        *,
+        request: Any,
+        explanation_turn_text: str,
+    ) -> Any:
+        """Construct a fresh :class:`AssistantRequest` for the
+        2nd-turn provider call. Mirrors the request the
+        provider saw on the 1st turn but swaps the
+        ``user_prompt`` for the explanation ask.
+        """
+        from dataclasses import replace as _replace_request
+        from app.services.ai.providers.base import AssistantRequest
+
+        try:
+            return _replace_request(
+                request, user_prompt=explanation_turn_text,
+            )
+        except Exception:
+            # The dataclass ``replace`` failed (non-dataclass
+            # request). Build a new AssistantRequest by
+            # copying the public surface manually.
+            return AssistantRequest(
+                user_prompt=explanation_turn_text,
+                history=request.history or (),
+                context=request.context,
+                mode=request.mode,
+                provider_hint=getattr(request, "provider_hint", None),
+                request_id=getattr(request, "request_id", None),
+            )
+
+    def _resolve_provider(
+        self, *, request: Any, mode: str
+    ) -> Any | None:
+        """Return the provider the service used for the 1st turn.
+
+        The service layer has its own resolver; this helper
+        uses the request's ``provider_hint`` if set, falling
+        back to the factory's :meth:`default_provider`.
+        Never raises.
+        """
+        try:
+            provider_hint = getattr(request, "provider_hint", None)
+            if provider_hint is not None:
+                return self._factory.get(provider_hint)
+            return self._factory.default_provider(mode=mode)
+        except Exception:  # noqa: BLE001
+            return None
+
+    # SPRINT AI-13 — deterministic-fallback AI-13 stamper.
+    # The deterministic fallback short-circuits the rest of
+    # the pipeline (no schema parse, no claim validation, no
+    # grounding check). The AI-13 audit fields are stamped
+    # AFTER the short-circuit so the wire envelope + the
+    # frontend trust UX see the same per-tool observability
+    # as the real LLM path. A failure here is invisible to
+    # the caller — the response is returned unchanged.
+    def _stamp_ai13_onto_deterministic(
+        self,
+        response: AssistantResponse,
+        dispatch_outcome: Any | None,
+        question_understanding: Any | None = None,
+    ) -> AssistantResponse:
+        try:
+            from app.services.ai.reasoning.ai13_dispatch_adapter import (
+                mint_partial_failure_stamp,
+                apply_partial_failure_to_confidence,
+            )
+            ai13_stamp = mint_partial_failure_stamp(dispatch_outcome)
+            meta = response.generation
+            if meta is None:
+                return response
+            from dataclasses import replace as _replace_ai13_fb
+            # AI-11 capability + business_dependency stamp
+            # (the deterministic-fallback short-circuit skipped
+            # the QU-driven audit; mirror it here).
+            fb_capability: tuple[str, ...] = ()
+            fb_business_dependency = "none"
+            if question_understanding is not None:
+                try:
+                    fb_capability = tuple(
+                        getattr(
+                            question_understanding, "capability", ()
+                        ) or ()
+                        # AI-12 — also mirror required_tools so
+                        # the wire envelope carries the tool
+                        # list.
+                    )
+                    fb_required_tools = tuple(
+                        getattr(
+                            question_understanding, "required_tools", ()
+                        ) or ()
+                    )
+                    fb_required_evidence_types = tuple(
+                        getattr(
+                            question_understanding,
+                            "required_evidence_types",
+                            (),
+                        ) or ()
+                    )
+                    fb_answer_mode = str(
+                        getattr(
+                            question_understanding,
+                            "answer_mode",
+                            "general_knowledge",
+                        ) or "general_knowledge"
+                    )
+                    fb_business_dependency = str(
+                        getattr(
+                            question_understanding,
+                            "business_dependency",
+                            "none",
+                        ) or "none"
+                    )
+                    if fb_business_dependency not in {
+                        "none", "optional", "required",
+                    }:
+                        fb_business_dependency = "none"
+                except Exception:  # pragma: no cover — defensive
+                    fb_capability = ()
+                    fb_business_dependency = "none"
+                    fb_required_tools = ()
+                    fb_required_evidence_types = ()
+                    fb_answer_mode = "general_knowledge"
+            else:
+                fb_required_tools = ()
+                fb_required_evidence_types = ()
+                fb_answer_mode = "general_knowledge"
+
+            # AI-12 mirrors — tool_plan + structured_tool_envelopes +
+            # evidence_requirements + contradiction_report + answer_quality
+            # all default-safe.
+            fb_tool_plan: dict | None = None
+            fb_envelopes: tuple[dict, ...] = ()
+            fb_evidence_requirements: dict | None = None
+            fb_contradiction_report: dict | None = None
+            fb_answer_quality: dict | None = None
+            if dispatch_outcome is not None:
+                try:
+                    plan = getattr(dispatch_outcome, "plan", None)
+                    if plan is not None and hasattr(plan, "to_dict"):
+                        fb_tool_plan = plan.to_dict()
+                    envelopes = tuple(
+                        getattr(dispatch_outcome, "envelopes", ()) or ()
+                    )
+                    fb_envelopes = tuple(
+                        e.to_dict() if hasattr(e, "to_dict") else dict(e)
+                        for e in envelopes
+                    )
+                except Exception:  # pragma: no cover — defensive
+                    pass
+
+            meta = _replace_ai13_fb(
+                meta,
+                tool_execution_traces=ai13_stamp.tool_execution_traces,
+                partial_failure_disclosure=(
+                    ai13_stamp.partial_failure_disclosure
+                ),
+                confidence_penalty=ai13_stamp.confidence_penalty,
+                capability=fb_capability,
+                business_dependency=fb_business_dependency,
+                tool_plan=fb_tool_plan,
+                structured_tool_envelopes=list(fb_envelopes),
+                evidence_requirements=fb_evidence_requirements,
+                contradiction_report=fb_contradiction_report,
+                answer_quality=fb_answer_quality,
+                answer_mode=fb_answer_mode,
+            )
+            # SPRINT AI-14 — Universal Answer Intelligence stamp.
+            # The deterministic-fallback short-circuit skipped the
+            # evidence-graph + answer-requirements derivation; build
+            # them now from the QU + dispatch outcome so the wire
+            # envelope carries the AI-14 fields uniformly. Each
+            # derivation is a pure function — same inputs always
+            # return the same dict. Failures are silently swallowed
+            # so the AI-13 stamping path stays non-breaking.
+            try:
+                from app.services.ai.reasoning.answer_requirements import (
+                    derive_answer_requirements,
+                )
+                from app.services.ai.reasoning.evidence_graph import (
+                    build_evidence_graph,
+                )
+                from app.services.ai.reasoning.calculation_lineage import (
+                    calculation_lineage_dicts,
+                    missing_data_state,
+                    unsupported_claims as _unsupported_claims,
+                    fabricated_sources as _fabricated_sources,
+                )
+                envelopes_tuple = tuple(
+                    getattr(dispatch_outcome, "envelopes", ()) or ()
+                )
+                fb_plan = getattr(dispatch_outcome, "plan", None)
+                fb_contradiction = getattr(
+                    dispatch_outcome, "contradiction_report", None
+                )
+                fb_answer_req = derive_answer_requirements(
+                    question_understanding=question_understanding,
+                    evidence_requirements=getattr(
+                        dispatch_outcome, "evidence_requirements", None
+                    ),
+                    tool_plan=fb_plan,
+                    envelopes=envelopes_tuple,
+                    context=request.context,
+                )
+                fb_evidence_graph = build_evidence_graph(
+                    question_understanding=question_understanding,
+                    reasoning_plan=fb_plan,
+                    envelopes=envelopes_tuple,
+                    context=request.context,
+                    contradiction_report=fb_contradiction,
+                    parsed_response=None,
+                )
+                fb_calc_lineage = calculation_lineage_dicts(envelopes_tuple)
+                fb_missing_state = missing_data_state(
+                    graph=fb_evidence_graph, proactive_rows=()
+                )
+                fb_unsupported = len(_unsupported_claims(fb_evidence_graph))
+                fb_fabricated = len(_fabricated_sources(fb_evidence_graph))
+                meta = _replace_ai13_fb(
+                    meta,
+                    answer_requirements=fb_answer_req.to_dict(),
+                    evidence_graph=fb_evidence_graph.to_dict(),
+                    calculation_lineage=list(fb_calc_lineage),
+                    missing_data_state=fb_missing_state,
+                    unsupported_claim_count=fb_unsupported,
+                    fabricated_source_count=fb_fabricated,
+                )
+                # SPRINT AI-15 — visualization + trust envelope.
+                # Planner + builder are pure; same inputs always
+                # return the same chart payloads. Failures here
+                # are silently swallowed so this block stays
+                # non-breaking.
+                try:
+                    from app.services.ai.reasoning.visualization_planner import (
+                        plan as _viz_plan,
+                    )
+                    from app.services.ai.reasoning.chart_data_builder import (
+                        build as _viz_build,
+                    )
+                    from app.services.ai.reasoning.trust_summary import (
+                        build_trust_summary as _build_trust,
+                    )
+                    ai15_plans = _viz_plan(
+                        question_understanding=question_understanding,
+                        answer_requirements=fb_answer_req,
+                        envelopes=envelopes_tuple,
+                        evidence_graph=fb_evidence_graph,
+                        contradiction_report=fb_contradiction,
+                    ).plans
+                    ai15_payloads = [
+                        _viz_build(p, envelopes=envelopes_tuple).to_dict()
+                        for p in ai15_plans
+                    ]
+                    ai15_quality = (
+                        meta.answer_quality if isinstance(meta.answer_quality, dict) else None
+                    )
+                    ai15_trust = _build_trust(
+                        assistant_context=request.context,
+                        envelopes=envelopes_tuple,
+                        evidence_graph=fb_evidence_graph,
+                        contradiction_report=fb_contradiction,
+                        answer_quality=ai15_quality,
+                        visualization_plans=ai15_plans,
+                        tool_traces=tuple(
+                            getattr(dispatch_outcome, "traces", ()) or ()
+                        ),
+                    )
+                    needs_warn = bool(
+                        (ai15_quality or {}).get("needs_warning")
+                    )
+                    warn_msg = str(
+                        (ai15_quality or {}).get("warning_message") or ""
+                    )
+                    meta = _replace_ai13_fb(
+                        meta,
+                        visualization_plans=ai15_payloads,
+                        quality_warning={
+                            "needs_warning": needs_warn,
+                            "warning_message": warn_msg,
+                        },
+                        trust_summary=ai15_trust,
+                    )
+                    # SPRINT AI-16 — Verified External Knowledge +
+                    # Freshness Layer. Scheme card + mixed
+                    # composition. Both pure; failures swallowed
+                    # defensively so the AI-15 path stays
+                    # non-breaking. ``scheme_composer.compose_scheme_card``
+                    # returns ``None`` for non-scheme prompts;
+                    # ``mixed_composer.compose_mixed_sections``
+                    # returns ``is_mixed=False`` for non-mixed
+                    # prompts. Both calls are no-ops when the QU
+                    # signals don't match.
+                    try:
+                        from app.services.ai.knowledge.ai16_scheme_composer import (
+                            compose_scheme_card as _ai16_scheme,
+                        )
+                        from app.services.ai.knowledge.ai16_mixed_composer import (
+                            compose_mixed_sections as _ai16_mixed,
+                        )
+                        scheme_payload = _ai16_scheme(
+                            question_understanding=question_understanding,
+                            context=request.context,
+                        )
+                        scheme_card_dict = (
+                            scheme_payload.card.to_dict()
+                            if scheme_payload is not None
+                            else None
+                        )
+                        mixed_blocks = _ai16_mixed(
+                            question_understanding=question_understanding,
+                            envelopes=envelopes_tuple,
+                            context=request.context,
+                        )
+                        meta = _replace_ai13_fb(
+                            meta,
+                            scheme_card=scheme_card_dict,
+                            mixed_answer=(
+                                mixed_blocks.to_dict()
+                                if mixed_blocks.is_mixed
+                                else None
+                            ),
+                        )
+                    except Exception:  # pragma: no cover — defensive
+                        pass
+                    # SPRINT AI-17 — Bounded Quality Repair + Claim
+                    # Lifecycle. The classifier + repair dispatcher
+                    # + bounded-retry gate run AFTER the AI-16
+                    # stamp and BEFORE the wire. The orchestrator
+                    # is pure; the retry itself is the caller's
+                    # responsibility, so we only mark
+                    # ``retry_attempted`` here and let the
+                    # upstream service decide.
+                    try:
+                        from app.services.ai.knowledge.ai17_orchestrator import (
+                            run_ai17_pipeline as _ai17_run,
+                        )
+                        _ai17_overlay = _ai17_run(
+                            payload=meta,
+                            starting_confidence=int(
+                                meta.confidence
+                                if meta.confidence is not None
+                                else 70
+                            ),
+                            materially_useful=True,
+                            budget_remaining_ms=15_000,
+                            hard_call_timeout_ms=15_000,
+                            retry_already_attempted=False,
+                            original_prompt=str(
+                                getattr(request, "prompt", "") or ""
+                            ),
+                        )
+                        meta = _replace_ai13_fb(
+                            meta,
+                            failure_classification=_ai17_overlay[
+                                "failure_classification"
+                            ],
+                            repair_applied=tuple(
+                                _ai17_overlay["applied_repairs"] or ()
+                            ),
+                            retry_attempted=bool(
+                                _ai17_overlay["retry_recommended"]
+                            ),
+                            retry_succeeded=None,
+                            numeric_corrections=tuple(
+                                r.to_dict()
+                                for r in _ai17_overlay["audit_log"].rows
+                            ),
+                            claim_lifecycle=_ai17_overlay[
+                                "lifecycle_store"
+                            ].to_dict(),
+                            bounded_repair_version=_ai17_overlay[
+                                "bounded_repair_version"
+                            ],
+                            confidence=_ai17_overlay[
+                                "adjusted_confidence"
+                            ],
+                        )
+                    except Exception:  # pragma: no cover — defensive
+                        pass
+                except Exception:  # pragma: no cover — defensive
+                    pass
+            except Exception:  # pragma: no cover — defensive
+                pass
+            if ai13_stamp.confidence_penalty > 0:
+                meta = _replace_ai13_fb(
+                    meta,
+                    server_confidence=apply_partial_failure_to_confidence(
+                        server_confidence=meta.server_confidence,
+                        confidence_penalty=ai13_stamp.confidence_penalty,
+                    ),
+                )
+            from dataclasses import replace as _replace_fb_resp
+            return _replace_fb_resp(response, generation=meta)
+        except Exception:  # pragma: no cover — defensive
+            return response
 
     def _generate_grounded(
         self,
@@ -529,6 +1244,7 @@ class AssistantProviderService:
         tool_results: tuple = (),
         wire_mode: Mode = "grounded",
         adaptive_answer_out: Any = None,
+        dispatch_outcome: Any | None = None,
     ) -> AssistantResponse:
         """Validate + ground a response in grounded mode.
 
@@ -561,7 +1277,9 @@ class AssistantProviderService:
         internal validator pipeline uses ``effective_mode``.
         """
         if _is_deterministic(response):
-            return response
+            return self._stamp_ai13_onto_deterministic(
+                response, dispatch_outcome, question_understanding,
+            )
 
         registry = EvidenceRegistry(request.context)
         # H7.8C — debug log so we can verify the registry
@@ -743,6 +1461,18 @@ class AssistantProviderService:
             limitations=tuple(parsed.limitations if parsed else ()),
             confidence=(parsed.confidence if parsed else None),
             generation_method="generative",
+            # SPRINT AI-11 — Universal Business-Aware Assistant
+            # hardening. Surface the capability tuple +
+            # business dependency literal that
+            # ``QuestionUnderstanding`` derived from the prompt,
+            # so the wire envelope carries the multi-label
+            # classification the brief §4 / §5 requires.
+            capability=tuple(
+                getattr(question_understanding, "capability", ()) or ()
+            ),
+            business_dependency=str(
+                getattr(question_understanding, "business_dependency", "none")
+            ),
         )
         # AI-1 — stamp the universal-assistant audit trail.
         # The wire ``mode`` is preserved (the user's pick).
@@ -757,6 +1487,15 @@ class AssistantProviderService:
         except Exception:
             adaptive = None
         from dataclasses import replace as _replace_ai1
+        # SPRINT AI-13 — derive the per-tool observability
+        # + partial-failure handling wire fields from the
+        # AI-12 DispatchOutcome. The stamp is then applied
+        # to the meta on the same ``replace`` call so we
+        # rebuild the dataclass once.
+        from app.services.ai.reasoning.ai13_dispatch_adapter import (
+            mint_partial_failure_stamp,
+        )
+        ai13_stamp = mint_partial_failure_stamp(dispatch_outcome)
         meta = _replace_ai1(
             meta,
             mode=wire_mode,
@@ -780,6 +1519,9 @@ class AssistantProviderService:
                 )
             ),
             claim_categories_used=tuple(report.claim_categories_used or ()),
+            tool_execution_traces=ai13_stamp.tool_execution_traces,
+            partial_failure_disclosure=ai13_stamp.partial_failure_disclosure,
+            confidence_penalty=ai13_stamp.confidence_penalty,
         )
         # AI-3 — stamp the claim-aware pipeline results on
         # the GenerationMeta. The merged fields power the
@@ -841,6 +1583,23 @@ class AssistantProviderService:
                 else ""
             ),
         )
+        # SPRINT AI-13 — reduce server_confidence by the
+        # partial-failure penalty. The penalty reflects the
+        # number of tools that did NOT succeed; the lower the
+        # ``server_confidence``, the more the trust disclosure
+        # in the UI should highlight the missing evidence.
+        # ``None`` when the AI-3 layer didn't produce a score.
+        if ai13_stamp.confidence_penalty > 0:
+            from app.services.ai.reasoning.ai13_dispatch_adapter import (
+                apply_partial_failure_to_confidence,
+            )
+            meta = _replace_ai3(
+                meta,
+                server_confidence=apply_partial_failure_to_confidence(
+                    server_confidence=meta.server_confidence,
+                    confidence_penalty=ai13_stamp.confidence_penalty,
+                ),
+            )
 
         # AI-4 — server-side Claim Auditor. Runs after the AI-3
         # numeric checker so it can consume the numeric_report.
@@ -909,6 +1668,234 @@ class AssistantProviderService:
             claim_audit_rejected=claim_audit_rejected,
             claim_audit_soft_corrections=claim_audit_soft_corrections,
         )
+
+        # SPRINT AI-14 — Universal Answer Intelligence + Evidence
+        # Graph. Build the per-claim lineage, derive the
+        # answer-requirements flags, and stamp the 6 AI-14 fields
+        # on the GenerationMeta. The graph is pure-functional —
+        # same inputs always return the same dict — so the wire
+        # envelope is deterministic across the two paths.
+        try:
+            from app.services.ai.reasoning.answer_requirements import (
+                derive_answer_requirements,
+            )
+            from app.services.ai.reasoning.evidence_graph import (
+                build_evidence_graph,
+            )
+            from app.services.ai.reasoning.calculation_lineage import (
+                calculation_lineage_dicts,
+                missing_data_state,
+                unsupported_claims as _unsupported_claims,
+                fabricated_sources as _fabricated_sources,
+            )
+            envelopes_tuple = tuple(
+                getattr(dispatch_outcome, "envelopes", ()) or ()
+            )
+            ai14_plan = getattr(dispatch_outcome, "plan", reasoning_plan)
+            ai14_contradiction = getattr(
+                dispatch_outcome, "contradiction_report", None
+            )
+            ai14_evidence_reqs = getattr(
+                dispatch_outcome, "evidence_requirements", None
+            )
+            ai14_parsed = parsed
+            ai14_answer_req = derive_answer_requirements(
+                question_understanding=question_understanding,
+                evidence_requirements=ai14_evidence_reqs,
+                tool_plan=ai14_plan,
+                envelopes=envelopes_tuple,
+                context=request.context,
+            )
+            ai14_graph = build_evidence_graph(
+                question_understanding=question_understanding,
+                reasoning_plan=ai14_plan,
+                envelopes=envelopes_tuple,
+                context=request.context,
+                contradiction_report=ai14_contradiction,
+                parsed_response=ai14_parsed,
+            )
+            ai14_calc_lineage = calculation_lineage_dicts(envelopes_tuple)
+            ai14_missing_state = missing_data_state(
+                graph=ai14_graph, proactive_rows=()
+            )
+            ai14_unsupported = len(_unsupported_claims(ai14_graph))
+            ai14_fabricated = len(_fabricated_sources(ai14_graph))
+            meta = _replace_ai4(
+                meta,
+                answer_requirements=ai14_answer_req.to_dict(),
+                evidence_graph=ai14_graph.to_dict(),
+                calculation_lineage=list(ai14_calc_lineage),
+                missing_data_state=ai14_missing_state,
+                unsupported_claim_count=ai14_unsupported,
+                fabricated_source_count=ai14_fabricated,
+            )
+            # SPRINT AI-15 — visualization plans + chart payloads
+            # + trust summary. Pure functions; failures swallowed
+            # defensively. The renderer reads these three fields
+            # to surface charts (VisualizationCard), the low-
+            # quality warning strip, and the "Why this answer?"
+            # disclosure.
+            try:
+                from app.services.ai.reasoning.visualization_planner import (
+                    plan as _viz_plan,
+                )
+                from app.services.ai.reasoning.chart_data_builder import (
+                    build as _viz_build,
+                )
+                from app.services.ai.reasoning.trust_summary import (
+                    build_trust_summary as _build_trust,
+                )
+                ai15_plans = _viz_plan(
+                    question_understanding=question_understanding,
+                    answer_requirements=ai14_answer_req,
+                    envelopes=envelopes_tuple,
+                    evidence_graph=ai14_graph,
+                    contradiction_report=ai14_contradiction,
+                ).plans
+                ai15_payloads = [
+                    _viz_build(p, envelopes=envelopes_tuple).to_dict()
+                    for p in ai15_plans
+                ]
+                ai15_quality = (
+                    meta.answer_quality if isinstance(meta.answer_quality, dict) else None
+                )
+                ai15_trust = _build_trust(
+                    assistant_context=request.context,
+                    envelopes=envelopes_tuple,
+                    evidence_graph=ai14_graph,
+                    contradiction_report=ai14_contradiction,
+                    answer_quality=ai15_quality,
+                    visualization_plans=ai15_plans,
+                    tool_traces=tuple(
+                        getattr(dispatch_outcome, "traces", ()) or ()
+                    ),
+                )
+                needs_warn = bool(
+                    (ai15_quality or {}).get("needs_warning")
+                )
+                warn_msg = str(
+                    (ai15_quality or {}).get("warning_message") or ""
+                )
+                meta = _replace_ai4(
+                    meta,
+                    visualization_plans=ai15_payloads,
+                    quality_warning={
+                        "needs_warning": needs_warn,
+                        "warning_message": warn_msg,
+                    },
+                    trust_summary=ai15_trust,
+                )
+                # SPRINT AI-16 — Verified External Knowledge +
+                # Freshness Layer. Scheme card + mixed
+                # composition. Both pure; failures swallowed
+                # defensively. ``scheme_composer.compose_scheme_card``
+                # returns ``None`` for non-scheme prompts;
+                # ``mixed_composer.compose_mixed_sections``
+                # returns ``is_mixed=False`` for non-mixed
+                # prompts. Both calls are no-ops when the QU
+                # signals don't match.
+                try:
+                    from app.services.ai.knowledge.ai16_scheme_composer import (
+                        compose_scheme_card as _ai16_scheme,
+                    )
+                    from app.services.ai.knowledge.ai16_mixed_composer import (
+                        compose_mixed_sections as _ai16_mixed,
+                    )
+                    scheme_payload = _ai16_scheme(
+                        question_understanding=question_understanding,
+                        context=request.context,
+                    )
+                    scheme_card_dict = (
+                        scheme_payload.card.to_dict()
+                        if scheme_payload is not None
+                        else None
+                    )
+                    mixed_blocks = _ai16_mixed(
+                        question_understanding=question_understanding,
+                        envelopes=envelopes_tuple,
+                        context=request.context,
+                    )
+                    meta = _replace_ai4(
+                        meta,
+                        scheme_card=scheme_card_dict,
+                        mixed_answer=(
+                            mixed_blocks.to_dict()
+                            if mixed_blocks.is_mixed
+                            else None
+                        ),
+                    )
+                except Exception:  # pragma: no cover — defensive
+                    pass
+                # SPRINT AI-17 — Bounded Quality Repair + Claim
+                # Lifecycle (grounded path). Mirror of the
+                # deterministic-fallback branch above.
+                try:
+                    from app.services.ai.knowledge.ai17_orchestrator import (
+                        run_ai17_pipeline as _ai17_run,
+                    )
+                    _ai17_overlay = _ai17_run(
+                        payload=meta,
+                        starting_confidence=int(
+                            meta.confidence
+                            if meta.confidence is not None
+                            else 70
+                        ),
+                        materially_useful=True,
+                        budget_remaining_ms=15_000,
+                        hard_call_timeout_ms=15_000,
+                        retry_already_attempted=False,
+                        original_prompt=str(
+                            getattr(request, "prompt", "") or ""
+                        ),
+                    )
+                    meta = _replace_ai4(
+                        meta,
+                        failure_classification=_ai17_overlay[
+                            "failure_classification"
+                        ],
+                        repair_applied=tuple(
+                            _ai17_overlay["applied_repairs"] or ()
+                        ),
+                        retry_attempted=bool(
+                            _ai17_overlay["retry_recommended"]
+                        ),
+                        retry_succeeded=None,
+                        numeric_corrections=tuple(
+                            r.to_dict()
+                            for r in _ai17_overlay["audit_log"].rows
+                        ),
+                        claim_lifecycle=_ai17_overlay[
+                            "lifecycle_store"
+                        ].to_dict(),
+                        bounded_repair_version=_ai17_overlay[
+                            "bounded_repair_version"
+                        ],
+                        confidence=_ai17_overlay[
+                            "adjusted_confidence"
+                        ],
+                    )
+                except Exception:  # pragma: no cover — defensive
+                    pass
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "ai.provider.ai15_envelope_failed: %s",
+                    exc,
+                    extra={
+                        "event": "ai.provider.ai15_envelope_failed",
+                        "mode": "grounded",
+                        "request_id": getattr(request, "request_id", None),
+                    },
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "ai.provider.ai14_envelope_failed: %s",
+                exc,
+                extra={
+                    "event": "ai.provider.ai14_envelope_failed",
+                    "mode": "grounded",
+                    "request_id": getattr(request, "request_id", None),
+                },
+            )
         # Carry the AI-3 payload to the wire via GenerationMeta
         # ``grounded_payload`` so the conversation_service can
         # project it onto ChatMessageOut.preserve the existing
@@ -953,6 +1940,7 @@ class AssistantProviderService:
         tool_results: tuple = (),
         wire_mode: Mode = "open",
         adaptive_answer_out: Any = None,
+        dispatch_outcome: Any | None = None,
     ) -> AssistantResponse:
         """Exploratory Business Advisor mode validation + envelope stamping."""
         body = response.body or ""
@@ -976,7 +1964,9 @@ class AssistantProviderService:
                 ),
             )
         if _is_deterministic(response):
-            return response
+            return self._stamp_ai13_onto_deterministic(
+                response, dispatch_outcome, question_understanding,
+            )
 
         registry = EvidenceRegistry(request.context)
         parsed = parse_open_model_output(body)
@@ -1034,6 +2024,14 @@ class AssistantProviderService:
         # AI-1 — stamp the universal-assistant audit trail
         # for open mode. The wire ``mode`` is preserved.
         from dataclasses import replace as _replace_open
+        # SPRINT AI-13 — same per-tool observability + partial-
+        # failure handling as the grounded path. Open mode
+        # still runs the dispatcher; the audit row stays
+        # consistent regardless of mode.
+        from app.services.ai.reasoning.ai13_dispatch_adapter import (
+            mint_partial_failure_stamp,
+        )
+        ai13_stamp = mint_partial_failure_stamp(dispatch_outcome)
         meta = _replace_open(
             meta,
             mode=wire_mode,
@@ -1057,6 +2055,21 @@ class AssistantProviderService:
                 )
             ),
             claim_categories_used=tuple(val_report.claim_categories_used or ()),
+            # SPRINT AI-11 — Universal Business-Aware Assistant
+            # hardening. Stamp the capability tuple +
+            # business dependency literal on the open-mode
+            # ``GenerationMeta`` mirror.
+            capability=tuple(
+                getattr(question_understanding, "capability", ()) or ()
+            ),
+            business_dependency=str(
+                getattr(question_understanding, "business_dependency", "none")
+            ),
+            # SPRINT AI-13 — per-tool observability + partial
+            # failure handling.
+            tool_execution_traces=ai13_stamp.tool_execution_traces,
+            partial_failure_disclosure=ai13_stamp.partial_failure_disclosure,
+            confidence_penalty=ai13_stamp.confidence_penalty,
         )
         return _replace_open(response, generation=meta)
 
@@ -1126,6 +2139,34 @@ class AssistantProviderService:
         if settings is None:
             return DEFAULT_GROUNDING_THRESHOLD
         return int(getattr(settings, "ai_grounding_threshold", DEFAULT_GROUNDING_THRESHOLD))
+
+    # SPRINT AI-8 — pick the caller intent for the tool-loop.
+    # Reads ``question_understanding.canonical_intent`` first
+    # (the AI-1 universal-assistant stage 1), falling back to
+    # ``request.context.intent`` when present, finally to
+    # ``"general"`` so the loop never errors. Never raises.
+    @staticmethod
+    def _intent_for_request(
+        question_understanding: Any, request: Any,
+    ) -> str:
+        try:
+            if question_understanding is not None:
+                canonical = getattr(
+                    question_understanding, "canonical_intent", None,
+                )
+                if canonical:
+                    return str(canonical)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            context = getattr(request, "context", None)
+            if context is not None:
+                ctx_intent = getattr(context, "intent", None)
+                if ctx_intent:
+                    return str(ctx_intent)
+        except Exception:  # noqa: BLE001
+            pass
+        return "general"
 
     def _is_schema_error(self, exc: AIProviderError) -> bool:
         """Decide whether an AIProviderError is a schema failure."""
@@ -1208,6 +2249,47 @@ class AssistantProviderService:
         fallback = DeterministicFallbackProvider()
         response = fallback.complete(request, reason=reason)
         from dataclasses import replace as _replace
+        # SPRINT AI-11 — Universal Business-Aware Assistant
+        # hardening. If the upstream orchestrator never ran
+        # ``understand_question`` (e.g. immediate fallback due
+        # to a quota / circuit-open condition), derive the
+        # capability tuple + business dependency literal on
+        # the fallback path so the wire envelope still carries
+        # the universal question classification. The
+        # derivation is deterministic and matches the
+        # QuestionUnderstanding fields exactly.
+        if (extra_meta is None or "capability" not in extra_meta) and response.generation is not None:
+            try:
+                from app.services.ai.reasoning.question_understanding import (
+                    understand_question,
+                )
+                _qd = understand_question(
+                    prompt=request.user_prompt,
+                    context=getattr(request, "context", None),
+                )
+                _capability = tuple(getattr(_qd, "capability", ()) or ())
+                _business_dependency = str(
+                    getattr(_qd, "business_dependency", "none") or "none"
+                )
+                if extra_meta is None:
+                    extra_meta = {
+                        "capability": _capability,
+                        "business_dependency": _business_dependency,
+                    }
+                else:
+                    extra_meta = dict(extra_meta)
+                    extra_meta.setdefault("capability", _capability)
+                    extra_meta.setdefault(
+                        "business_dependency", _business_dependency,
+                    )
+            except Exception:  # noqa: BLE001
+                # Never let a non-essential derivation break the
+                # fallback contract — ``GenerationMeta`` defaults
+                # keep the wire shape safe.
+                logger.warning(
+                    "ai.provider.ai11_fallback_capability_derivation_failed",
+                    exc_info=True,
+                )
         if response.generation is not None:
             if extra_meta:
                 return _replace(

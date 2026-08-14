@@ -54,7 +54,7 @@ def main() -> int:
     }
 
     # 1. Backend reachable check
-    backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
+    backend_url = os.environ.get("BACKEND_URL", "http://localhost:8001")
     backend_ok = check_url(f"{backend_url}/docs") or check_url(f"{backend_url}/api/v1/chat/provider-status")
     print(f"  [1/12] Backend Service ({backend_url}): {'PASS' if backend_ok else 'SKIP/OFFLINE'}")
 

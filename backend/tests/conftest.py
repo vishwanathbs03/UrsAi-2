@@ -77,34 +77,42 @@ def _wipe_persistent_db_files() -> None:
     ``serviceuser@example.com``) therefore fail on the
     second pytest run with a UNIQUE constraint error.
 
-    We drop *all* tables in those files using a throw-away
-    engine (we do NOT reuse the application's cached engine
-    because the test modules each bind ``DATABASE_URL`` to one
-    of these files, and the application engine is bound to
-    whichever URL was current at first import). The test
-    module's own ``create_all`` then reconstructs the schema
-    cleanly.
+    Earlier versions used ``Base.metadata.drop_all`` against
+    a throw-away engine, but the application engine had
+    already cached a connection to the same file by the time
+    the test module ran its ``create_all`` — so the drop was
+    effectively a no-op against the file that mattered. The
+    reliable fix is to **delete the file itself** before
+    each pytest run, so ``create_all`` rebuilds the schema
+    from scratch against a clean SQLite.
     """
     backend = _backend_root()
     # Defer the SQLAlchemy import until the function is called
     # so the test module's own DATABASE_URL is not affected by
     # an early import of ``app.utils.database`` (which would
     # build the application engine against the wrong URL).
-    from sqlalchemy import create_engine  # noqa: PLC0415
-    from app.utils.database import Base  # noqa: PLC0415
-
     candidates = [backend / "atlas_ai.db", backend / "hackathon_demo.db"]
     for db_path in candidates:
         if not db_path.exists():
             continue
-        engine = create_engine(
-            f"sqlite:///{db_path}".replace("\\", "/"),
-            future=True,
-        )
         try:
-            Base.metadata.drop_all(bind=engine)
-        finally:
-            engine.dispose()
+            db_path.unlink()
+        except OSError:
+            # File is locked by a still-open connection (e.g.
+            # from a prior pytest run that did not close its
+            # session). Fall back to drop_all on a fresh
+            # engine so we at least empty the tables.
+            from sqlalchemy import create_engine  # noqa: PLC0415
+            from app.utils.database import Base  # noqa: PLC0415
+
+            engine = create_engine(
+                f"sqlite:///{db_path}".replace("\\", "/"),
+                future=True,
+            )
+            try:
+                Base.metadata.drop_all(bind=engine)
+            finally:
+                engine.dispose()
 
 
 # ---------------------------------------------------------------------------

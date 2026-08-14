@@ -110,7 +110,7 @@ still passes.
 ## 4. Test results — honest record
 
 Run date: 2026-08-05.
-Stack: backend on `localhost:8001`, frontend on `localhost:3000`, seeded
+Stack: backend on `localhost:8090`, frontend on `localhost:3000`, seeded
 with `acme.textiles@example.com` / `AcmeDemoPass1`.
 
 ```

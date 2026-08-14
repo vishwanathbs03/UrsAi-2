@@ -68,17 +68,43 @@ class QuestionEntry:
         Free-form tags the runner keys off (e.g.
         ``{"calculation", "working_capital"}``). Empty tuple
         when no tag is relevant.
+    golden_evidence_id:
+        Sprint AI-19 — server-owned evidence ID the
+        response should cite. Empty when no canonical
+        evidence exists for the prompt. The structural
+        evidence-correctness metric uses this to verify
+        that the cited evidence ID matches.
+    golden_evidence_value:
+        Sprint AI-19 — the value the response should
+        assert (e.g. ``"1.8 crore"``). Used by the
+        semantic-ownership check in
+        :mod:`app.services.ai.evaluation.evidence_matcher`.
+        Empty when no numeric / token value is
+        verifiable.
+    expected_tools:
+        Sprint AI-20 — minimal tool set the
+        planner MUST emit for this prompt. Drives the
+        ``unnecessary_tool_calls`` /
+        ``unnecessary_tool_request_rate`` metrics and
+        the adversarial matrix. Empty when no
+        canonical plan exists (legacy entries).
     """
 
     prompt: str
     category: str
     tags: tuple[str, ...] = ()
+    golden_evidence_id: str = ""
+    golden_evidence_value: str = ""
+    expected_tools: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
             "prompt": self.prompt,
             "category": self.category,
             "tags": list(self.tags),
+            "golden_evidence_id": str(self.golden_evidence_id),
+            "golden_evidence_value": str(self.golden_evidence_value),
+            "expected_tools": list(self.expected_tools),
         }
 
 
@@ -87,7 +113,14 @@ class QuestionEntry:
 # --------------------------------------------------------------------------- #
 
 
-# Each tuple element is (prompt, category, [tags...]).
+# Each tuple element is (prompt, category, tags,
+# [golden_evidence_id], [golden_evidence_value]). The
+# last two fields are optional — the bank intentionally
+# stays heterogeneous. Sprint AI-19 adds golden-evidence
+# hooks so the structural matcher has a deterministic
+# oracle for select entries. Existing 3-tuple entries
+# keep working via positional defaults below.
+#
 # The bank is intentionally heterogeneous — every entry is
 # phrased differently so the runner measures GENERAL behaviour,
 # not flagship memorisation.
@@ -207,6 +240,33 @@ _BANK: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "How many senior engineers can we afford at our current burn?",
         QuestionCategory.CALCULATION, ("headcount_cost",),
+    ),
+    # Sprint AI-19 — golden-evidence oracle entries. The
+    # structural matcher uses these to drive a deterministic
+    # evidence-correctness measurement. The first three
+    # mirror the brief's worked examples (revenue,
+    # supplier concentration, calculation). They are
+    # additive — the bank remains 108+ entries.
+    (
+        "What is our annual revenue?",
+        QuestionCategory.BUSINESS_FACT,
+        ("revenue",),
+        "rec_revenue_001",
+        "1.8 crore",
+    ),
+    (
+        "How concentrated is our supplier base?",
+        QuestionCategory.BUSINESS_ANALYSIS,
+        ("supplier_risk",),
+        "rec_supplier_001",
+        "supplier concentration high",
+    ),
+    (
+        "What's our working capital cycle in days?",
+        QuestionCategory.CALCULATION,
+        ("working_capital",),
+        "calc_wc_001",
+        "45 days",
     ),
     # ---- RECOMMENDATION (≥6) -------------------------------------- #
     (
@@ -545,16 +605,346 @@ _BANK: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 
 
 # --------------------------------------------------------------------------- #
+# Sprint AI-20 — expected minimal tool plans per prompt.
+# --------------------------------------------------------------------------- #
+# Drives ``unnecessary_tool_calls`` /
+# ``unnecessary_tool_request_rate`` and the adversarial
+# matrix. Mapping is keyed by prompt text — entries without
+# a key carry ``expected_tools=()`` (legacy behaviour).
+#
+# The expected plan is the *minimum* deterministic tool set
+# the planner should emit. Optional tools that may improve
+# the answer are NOT listed here — only the strictly-required
+# ones. The adversarial matrix uses these as the oracle.
+
+_EXPECTED_TOOLS_BY_PROMPT: dict[str, tuple[str, ...]] = {
+    # ---- GENERAL KNOWLEDGE — knowledge_retrieval only ----- #
+    "What does EBITDA stand for?": ("knowledge_retrieval",),
+    "Explain working capital in plain English.": (
+        "knowledge_retrieval",
+    ),
+    "Define gross margin as if I'm starting a business tomorrow.": (
+        "knowledge_retrieval",
+    ),
+    "What's the difference between revenue and profit?": (
+        "knowledge_retrieval",
+    ),
+    "How do I think about cash conversion cycle?": (
+        "knowledge_retrieval",
+    ),
+    "Can you walk me through what a P&L statement shows?": (
+        "knowledge_retrieval",
+    ),
+    "What is ROI and why does it matter?": (
+        "knowledge_retrieval",
+    ),
+    # ---- BUSINESS FACT — kpi only ----- #
+    "How much revenue are we doing today?": ("kpi",),
+    "What's our current headcount?": ("kpi",),
+    "Where is our business located?": ("kpi",),
+    "Tell me our overall business score.": ("kpi",),
+    "What's the legal name of our company?": ("kpi",),
+    "How many workers do we have on the payroll?": ("kpi",),
+    "What industry are we in?": ("kpi",),
+    "What is our annual revenue?": ("kpi",),
+    # ---- BUSINESS ANALYSIS — health_score + kpi + insights ----- #
+    "Where is our business strongest?": (
+        "health_score", "kpi", "insights",
+    ),
+    "What's holding us back right now?": (
+        "health_score", "kpi", "insights",
+    ),
+    "How is our digital twin trending this quarter?": (
+        "health_score", "kpi",
+    ),
+    "What does the latest business score say about us?": (
+        "health_score", "kpi",
+    ),
+    "Which archetype does our business resemble most?": (
+        "health_score", "kpi",
+    ),
+    "Is our growth profile closer to a startup or established firm?": (
+        "health_score", "kpi",
+    ),
+    "Which part of our operations needs attention first?": (
+        "health_score", "insights",
+    ),
+    "How concentrated is our supplier base?": (
+        "health_score", "risk",
+    ),
+    # ---- CALCULATION — finance + kpi ----- #
+    "How much revenue do we need to hit ₹3 Cr?": ("finance", "kpi"),
+    "What's our gap to ₹5 crore annual revenue?": ("finance", "kpi"),
+    "By how much must we grow to reach our target?": (
+        "finance", "kpi",
+    ),
+    "What is the growth multiple between current and target revenue?": (
+        "finance", "kpi",
+    ),
+    "How much working capital do we need?": ("finance", "kpi"),
+    "Estimate our working capital requirement.": ("finance", "kpi"),
+    "How many senior engineers can we afford at our current burn?": (
+        "finance", "kpi",
+    ),
+    "What's our working capital cycle in days?": ("finance", "kpi"),
+    # ---- RECOMMENDATION — recommendation + insights ----- #
+    "What should we focus on first this quarter?": (
+        "recommendation", "insights",
+    ),
+    "Which single move will move the needle most?": (
+        "recommendation", "insights",
+    ),
+    "What's the most impactful action we can take right now?": (
+        "recommendation", "insights",
+    ),
+    "If I can only do one thing next week, what should it be?": (
+        "recommendation", "insights",
+    ),
+    "Recommend the top 3 changes we should make.": (
+        "recommendation", "insights",
+    ),
+    "Which recommendation from our roadmap is most urgent?": (
+        "recommendation", "insights",
+    ),
+    "What do you suggest we tackle in the next 30 days?": (
+        "recommendation", "insights",
+    ),
+    # ---- SCENARIO — predictive_sprint14 + scenario ----- #
+    "What happens if we grow revenue 20% next year?": (
+        "predictive_sprint14", "scenario",
+    ),
+    "Simulate a 15% rise in cotton prices — how do we fare?": (
+        "predictive_sprint14", "scenario",
+    ),
+    "What if we lose our biggest customer tomorrow?": (
+        "predictive_sprint14", "scenario",
+    ),
+    "How would hiring 10 more people change our runway?": (
+        "predictive_sprint14", "scenario",
+    ),
+    "If we expand to a new state, what changes?": (
+        "predictive_sprint14", "scenario",
+    ),
+    "Walk me through a scenario where our costs rise 10%.": (
+        "predictive_sprint14", "scenario",
+    ),
+    "What happens if I increase price by 10%?": (
+        "predictive_sprint14", "scenario",
+    ),
+    # ---- FORECAST — predictive_sprint14 ----- #
+    "What does our revenue forecast say for next year?": (
+        "predictive_sprint14",
+    ),
+    "Where will we be in 12 months if nothing changes?": (
+        "predictive_sprint14",
+    ),
+    "Predict our headcount requirement 18 months out.": (
+        "predictive_sprint14",
+    ),
+    "What is our expected revenue trajectory?": (
+        "predictive_sprint14",
+    ),
+    "Show me the projected order book.": (
+        "predictive_sprint14",
+    ),
+    "What's our 24-month growth outlook?": (
+        "predictive_sprint14",
+    ),
+    # ---- COMPARISON — compare + benchmark ----- #
+    "How do we stack up against industry peers?": (
+        "compare_recommendations", "benchmark",
+    ),
+    "Compare our margin to the industry average.": (
+        "compare_recommendations", "benchmark", "finance",
+    ),
+    "Are we paying above or below market for raw materials?": (
+        "compare_recommendations", "benchmark",
+    ),
+    "What's our headcount relative to similar businesses?": (
+        "compare_recommendations", "benchmark",
+    ),
+    # ---- FINANCIAL — finance + kpi ----- #
+    "What's our gross margin this quarter?": ("finance", "kpi"),
+    "How is our cash conversion cycle trending?": ("finance", "kpi"),
+    "What's our operating cash flow right now?": ("finance", "kpi"),
+    "How concentrated is our customer revenue?": ("finance", "kpi"),
+    # ---- OPERATIONAL — health_score + risk + readiness ----- #
+    "Which process is our biggest bottleneck?": (
+        "health_score", "risk", "readiness",
+    ),
+    "How efficient is our production line?": (
+        "health_score", "risk", "readiness",
+    ),
+    "What's our supplier reliability?": (
+        "health_score", "risk",
+    ),
+    "Are we over- or under-staffed?": (
+        "health_score", "readiness",
+    ),
+    "How do we track inventory turnover?": (
+        "health_score", "risk", "readiness",
+    ),
+    "Where do we lose the most time in a typical day?": (
+        "health_score", "risk", "readiness",
+    ),
+    # ---- RISK — risk + insights ----- #
+    "What are our top 3 risks right now?": ("risk", "insights"),
+    "Are we over-reliant on a single customer?": ("risk", "insights"),
+    "How exposed are we to commodity price swings?": ("risk",),
+    # ---- GOVERNMENT SCHEME — schemes_sprint16 ----- #
+    "Which government scheme fits us best?": ("schemes_sprint16",),
+    "Am I eligible for MUDRA?": ("schemes_sprint16",),
+    "What subsidies can we claim as a textile MSME?": (
+        "schemes_sprint16",
+    ),
+    "Show me CGTMSE options.": ("schemes_sprint16",),
+    # ---- EXPORT — schemes + compliance ----- #
+    "What export markets are best for our products?": (
+        "schemes_sprint16", "compliance",
+    ),
+    "How do I find international buyers for Tirupur textiles?": (
+        "schemes_sprint16", "compliance",
+    ),
+    "What export incentives can we claim?": (
+        "schemes_sprint16", "compliance",
+    ),
+    "Walk me through the export documentation process.": (
+        "schemes_sprint16", "compliance",
+    ),
+    "Which countries have the strongest demand for our category?": (
+        "schemes_sprint16", "compliance",
+    ),
+    "How do I hedge against USD/INR swings?": (
+        "schemes_sprint16", "compliance",
+    ),
+    # ---- ROADMAP — roadmap + recommendation ----- #
+    "What's our 90-day roadmap?": ("roadmap", "recommendation"),
+    "Show me the 12-month plan.": ("roadmap", "recommendation"),
+    "What are the milestones for the next quarter?": (
+        "roadmap", "recommendation",
+    ),
+    "Lay out the 3-year strategic priorities.": (
+        "roadmap", "recommendation",
+    ),
+    "Where will we be by the end of this year?": (
+        "roadmap", "recommendation",
+    ),
+    "How should we sequence the next 6 months?": (
+        "roadmap", "recommendation",
+    ),
+    # ---- EXTERNAL INFORMATION — knowledge_retrieval ----- #
+    "What is the current repo rate?": ("knowledge_retrieval",),
+    "What is the latest GST rate for textiles?": (
+        "knowledge_retrieval",
+    ),
+    "How is the MSME sector performing nationally?": (
+        "knowledge_retrieval",
+    ),
+    "What's the prevailing cotton benchmark?": (
+        "knowledge_retrieval",
+    ),
+    "Explain the Udyam registration process.": (
+        "knowledge_retrieval",
+    ),
+    "What does the latest RBI policy say for small business loans?": (
+        "knowledge_retrieval",
+    ),
+    # ---- MIXED — knowledge_retrieval + relevant business tool ----- #
+    "Explain EBITDA AND tell me whether mine is healthy.": (
+        "knowledge_retrieval", "finance", "kpi",
+    ),
+    "What is working capital AND how can I reduce ours?": (
+        "knowledge_retrieval", "finance", "recommendation",
+    ),
+    "Compare my margin to the industry AND recommend improvements.": (
+        "compare_recommendations", "benchmark",
+        "recommendation", "insights",
+    ),
+}
+
+
+# --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 
 
 def all_questions() -> tuple[QuestionEntry, ...]:
-    """Return the full bank as :class:`QuestionEntry` tuples."""
-    return tuple(
-        QuestionEntry(prompt=p, category=c, tags=t)
-        for (p, c, t) in _BANK
-    )
+    """Return the full bank as :class:`QuestionEntry` tuples.
+
+    Sprint AI-19 — accepts both 3-tuples (legacy) and
+    5-tuples (with ``golden_evidence_id`` /
+    ``golden_evidence_value``). New entries can populate
+    the golden evidence hooks so the structural
+    evidence-correctness metric has a deterministic
+    oracle.
+
+    Sprint AI-20 — accepts a 6-tuple shape:
+    ``(prompt, category, tags, golden_evidence_id,
+    golden_evidence_value, expected_tools)``. The
+    expected_tools tuple is the minimal tool set the
+    planner MUST emit for that prompt; used by the
+    tool-minimality metric + adversarial matrix.
+
+    Additionally, ``_EXPECTED_TOOLS_BY_PROMPT`` is the
+    canonical lookup table for expected minimal plans.
+    Entries present in this table get their
+    ``expected_tools`` populated even if the bank tuple
+    shape is the 3- or 5-tuple legacy form.
+    """
+    out: list[QuestionEntry] = []
+    for entry in _BANK:
+        if len(entry) == 3:
+            p, c, t = entry
+            expected = _EXPECTED_TOOLS_BY_PROMPT.get(p, ())
+            out.append(
+                QuestionEntry(
+                    prompt=p,
+                    category=c,
+                    tags=t,
+                    expected_tools=tuple(expected),
+                )
+            )
+        elif len(entry) == 5:
+            p, c, t, gid, gv = entry
+            expected = _EXPECTED_TOOLS_BY_PROMPT.get(p, ())
+            out.append(
+                QuestionEntry(
+                    prompt=p,
+                    category=c,
+                    tags=t,
+                    golden_evidence_id=gid,
+                    golden_evidence_value=gv,
+                    expected_tools=tuple(expected),
+                )
+            )
+        elif len(entry) == 6:
+            (
+                p,
+                c,
+                t,
+                gid,
+                gv,
+                et,
+            ) = entry
+            # The lookup table takes precedence over the
+            # 6-tuple's expected_tools field — same prompt
+            # text, same expected plan.
+            expected = _EXPECTED_TOOLS_BY_PROMPT.get(p, et)
+            out.append(
+                QuestionEntry(
+                    prompt=p,
+                    category=c,
+                    tags=t,
+                    golden_evidence_id=gid,
+                    golden_evidence_value=gv,
+                    expected_tools=tuple(expected or ()),
+                )
+            )
+        else:
+            raise ValueError(
+                f"Unexpected bank entry shape: {entry!r}"
+            )
+    return tuple(out)
 
 
 def questions_by_category(category: str) -> tuple[QuestionEntry, ...]:

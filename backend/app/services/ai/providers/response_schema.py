@@ -189,6 +189,28 @@ class GroundedResponse:
     roi_estimate: str = ""
     risks: tuple[str, ...] = field(default_factory=tuple)
 
+    # SPRINT AI-8 — Controlled Business Tool Router. When
+    # the LLM wants to ask the deterministic engines for
+    # more data, it emits ``"tool_calls": [{"tool": "...",
+    # "arguments": {...}}]``. The router validates + dispatches
+    # each request and feeds the result back on a 2nd turn.
+    # The renderer (``to_chat_body``) is unaware of this
+    # field — the wire picks it up at the envelope layer so
+    # the legacy prose renderer is unchanged.
+    #
+    # Each entry has the shape::
+    #
+    #     {"tool": str, "arguments": dict, "reason": str}
+    #
+    # The schema here is intentionally loose (``tuple[dict, ...]``)
+    # because the strict validation lives in the router —
+    # the LLM may emit any well-formed dict; the router
+    # rejects anything outside the 12-tool whitelist. Empty
+    # tuple when the LLM did not request any tools. Field
+    # is appended at the END to preserve the AI-N additive
+    # contract.
+    tool_calls: tuple[dict, ...] = field(default_factory=tuple)
+
     # ----- convenience: render for the assistant chat UI -----
 
     def to_chat_body(self) -> str:
@@ -561,6 +583,27 @@ def parse_model_output(raw_text: str) -> ValidationResult:
         parsed.get("risks"), "risks", errors,
     )
 
+    # SPRINT AI-8 — extract the LLM-emitted tool_calls array.
+    # Strict shape validation lives in the router — here we
+    # only enforce "must be a list" + "every entry must be a
+    # dict". The router applies the 6-step pipeline. Empty
+    # list when the LLM didn't request any tools.
+    tool_calls_raw = parsed.get("tool_calls") or []
+    if not isinstance(tool_calls_raw, list):
+        tool_calls_raw = []
+    tool_calls: list[dict[str, Any]] = []
+    for tc_item in tool_calls_raw[:_MAX_LIST_LEN]:
+        if isinstance(tc_item, dict):
+            tool_calls.append({
+                "tool": str(tc_item.get("tool") or ""),
+                "arguments": (
+                    tc_item.get("arguments")
+                    if isinstance(tc_item.get("arguments"), dict)
+                    else {}
+                ),
+                "reason": str(tc_item.get("reason") or ""),
+            })
+
     # Validation is *strict enough to fall back* if the core fields are
     # missing. The structure exists, but the response must include at
     # least an executive_summary OR at least one recommendation to be
@@ -591,6 +634,7 @@ def parse_model_output(raw_text: str) -> ValidationResult:
         priority_matrix=tuple(priority_matrix),
         roi_estimate=roi_estimate,
         risks=risks,
+        tool_calls=tuple(tool_calls),
     )
     return ValidationResult(
         response=response,

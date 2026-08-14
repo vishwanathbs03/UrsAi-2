@@ -362,7 +362,7 @@ ollama serve
 export AI_PROVIDER=ollama
 export OLLAMA_BASE_URL=http://localhost:11434
 export OLLAMA_MODEL=llama3.1
-cd backend && uvicorn app.main:app --port 8001
+cd backend && uvicorn app.main:app --port 8090
 # In the browser, ask the assistant: "What is my overall business
 # health and why?" — confirm the response references the score
 # + band + DNA archetype + top recommendations.

@@ -190,8 +190,8 @@ Permissions-Policy:             camera=(), microphone=(), geolocation=(),
 Cross-Origin-Opener-Policy:     same-origin
 Cross-Origin-Resource-Policy:   same-origin
 Content-Security-Policy:         default-src 'self';
-                                  ...; connect-src 'self' http://127.0.0.1:8000
-                                  http://localhost:8001 http://127.0.0.1:8001
+                                  ...; connect-src 'self' http://127.0.0.1:8090
+                                  http://localhost:8090 http://127.0.0.1:8090
                                   ws://localhost:* ws://127.0.0.1:*;
                                   frame-ancestors 'none'; base-uri 'self';
                                   form-action 'self'

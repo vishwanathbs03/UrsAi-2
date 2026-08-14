@@ -23,7 +23,7 @@
  * without false negatives. No emoji / no flourish; the
  * badge is information, not decoration.
  */
-import { BadgeCheck, Cpu, Globe, Sparkles, TrendingUp, User } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Cpu, Globe, Sparkles, TrendingUp, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type TrustLabel =
@@ -110,6 +110,45 @@ export function TrustBadge({
 }
 
 /**
+ * Sprint AI-14 — "Unsupported claim" pill.
+ *
+ * Lights up when the evidence-graph validator flagged at least
+ * one ClaimNode with ``validation_status == "unsupported"``.
+ * The pill is read-only — the count comes from
+ * ``generation.unsupported_claim_count``; the LLM has no path
+ * to author this number. Renders nothing when the count is 0
+ * (or undefined / negative / NaN).
+ */
+export function UnsupportedClaimBadge({
+  count,
+  className,
+}: {
+  count?: number;
+  className?: string;
+}) {
+  if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) {
+    return null;
+  }
+  const safe = Math.max(0, Math.floor(count));
+  return (
+    <span
+      role="note"
+      aria-label={`${safe} unsupported claim${safe === 1 ? "" : "s"} in this answer`}
+      title="Some claims in this answer could not be grounded in evidence."
+      data-testid="ai14-unsupported-claim-badge"
+      data-count={safe}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-rose-700",
+        className,
+      )}
+    >
+      <AlertTriangle className="size-3" aria-hidden="true" />
+      {safe} unsupported claim{safe === 1 ? "" : "s"}
+    </span>
+  );
+}
+
+/**
  * TrustMeta — H7.3 (Docx Prompt 3 Part 4) required metadata block.
  *
  * Renders the docx-required fields under every assistant
@@ -148,6 +187,45 @@ export function TrustMeta({
   promptTruncated,
   providerLatencyMs,
   contextManifest,
+  /**
+   * Sprint AI-13 — partial-failure disclosure. When at least
+   * one tool failed, surface the one-line sentence so the
+   * user can see why the trust badge may be downgraded.
+   */
+  partialFailureDisclosure,
+  /**
+   * Sprint AI-13 — integer 0..40 confidence penalty from
+   * partial tool failure. 0 when every tool succeeded.
+   * Subtract this from the displayed confidence (the wire
+   * already does this server-side; we surface it again
+   * here for transparency).
+   */
+  confidencePenalty,
+  /**
+   * Sprint AI-14 — per-claim evidence graph the engine
+   * built. ``null`` / undefined when the engine did not run
+   * (legacy rows). Rendered as a one-line summary under the
+   * "Why am I seeing this?" disclosure.
+   */
+  evidenceGraph,
+  /**
+   * Sprint AI-14 — missing-data state with the four
+   * {known, derived, estimated, unknown} buckets. Surfaced
+   * so the user can see what the engine knows vs. what it
+   * does not know.
+   */
+  missingDataState,
+  /**
+   * Sprint AI-14 — count of unsupported ClaimNodes (drives
+   * the UnsupportedClaimBadge pill; we also surface the
+   * number textually inside the disclosure for transparency).
+   */
+  unsupportedClaimCount,
+  /**
+   * Sprint AI-14 — count of fabricated ExternalSourceNode
+   * entries (URL guard failures). Surfaced textually.
+   */
+  fabricatedSourceCount,
   className,
 }: {
   confidence?: number;
@@ -166,6 +244,12 @@ export function TrustMeta({
     records_used: number;
     prompt_truncated: boolean;
   } | null;
+  partialFailureDisclosure?: string | null;
+  confidencePenalty?: number;
+  evidenceGraph?: Record<string, unknown> | null;
+  missingDataState?: Record<string, unknown> | null;
+  unsupportedClaimCount?: number;
+  fabricatedSourceCount?: number;
   className?: string;
 }) {
   return (
@@ -222,6 +306,24 @@ export function TrustMeta({
           <p>
             <span className="font-semibold">Confidence:</span>{" "}
             {Math.max(0, Math.min(100, confidence))}/100
+            {typeof confidencePenalty === "number" && confidencePenalty > 0 ? (
+              <span
+                data-testid="ai13-confidence-penalty"
+                className="ml-1 text-amber-700"
+                title={`${confidencePenalty} pt deduction from partial tool failure`}
+              >
+                (-{confidencePenalty})
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+        {partialFailureDisclosure ? (
+          <p
+            data-testid="ai13-partial-failure-disclosure"
+            className="text-amber-700"
+          >
+            <span className="font-semibold">Partial answer:</span>{" "}
+            {partialFailureDisclosure}
           </p>
         ) : null}
         {assumptions && assumptions.length > 0 ? (
@@ -251,6 +353,77 @@ export function TrustMeta({
               {evidence.map((e, i) => (
                 <li key={`e-${i}`}>{e}</li>
               ))}
+            </ul>
+          </div>
+        ) : null}
+        {/* Sprint AI-14 — evidence-graph disclosure. Reads only
+            the public summary fields (claim counts + unsupported
+            counter + contradiction severity); never renders the
+            full per-claim lineage inside this disclosure block —
+            that lives in the dedicated technical-provenance panel. */}
+        {evidenceGraph &&
+        typeof evidenceGraph === "object" &&
+        (Array.isArray((evidenceGraph as Record<string, unknown>).claims) ||
+          Array.isArray((evidenceGraph as Record<string, unknown>).nodes)) ? (
+          <div data-testid="ai14-evidence-graph-summary">
+            <p className="font-semibold">Evidence graph</p>
+            <p className="text-muted-foreground">
+              {(() => {
+                const claims = (evidenceGraph as Record<string, unknown>)
+                  .claims as unknown[] | undefined;
+                const count = Array.isArray(claims) ? claims.length : 0;
+                return `${count} claim${count === 1 ? "" : "s"}`;
+              })()}
+              {typeof unsupportedClaimCount === "number" &&
+              unsupportedClaimCount > 0
+                ? ` · ${unsupportedClaimCount} unsupported`
+                : " · all supported"}
+              {typeof (evidenceGraph as Record<string, unknown>)
+                .contradiction_severity === "string" &&
+              ((evidenceGraph as Record<string, unknown>)
+                .contradiction_severity as string) !== "none"
+                ? ` · contradictions: ${
+                    (evidenceGraph as Record<string, unknown>)
+                      .contradiction_severity as string
+                  }`
+                : ""}
+              {typeof fabricatedSourceCount === "number" &&
+              fabricatedSourceCount > 0
+                ? ` · ${fabricatedSourceCount} unverified source${
+                    fabricatedSourceCount === 1 ? "" : "s"
+                  }`
+                : ""}
+            </p>
+          </div>
+        ) : null}
+        {/* Sprint AI-14 — missing-data disclosure. Renders the
+            "What I am missing" bucket count + sample field
+            names so the user can see what's still unknown. */}
+        {missingDataState &&
+        typeof missingDataState === "object" &&
+        Array.isArray(
+          (missingDataState as Record<string, unknown>).unknown,
+        ) &&
+        ((missingDataState as Record<string, unknown>).unknown as unknown[])
+          .length > 0 ? (
+          <div data-testid="ai14-missing-data-summary">
+            <p className="font-semibold">What I am missing</p>
+            <ul className="ml-4 list-disc text-muted-foreground">
+              {(
+                (missingDataState as Record<string, unknown>)
+                  .unknown as unknown[]
+              )
+                .slice(0, 5)
+                .map((entry, i) => {
+                  const e = entry as Record<string, unknown>;
+                  const label =
+                    typeof e.claim_text === "string"
+                      ? e.claim_text
+                      : typeof e.field === "string"
+                      ? e.field
+                      : `Missing item ${i + 1}`;
+                  return <li key={`m-${i}`}>{label}</li>;
+                })}
             </ul>
           </div>
         ) : null}

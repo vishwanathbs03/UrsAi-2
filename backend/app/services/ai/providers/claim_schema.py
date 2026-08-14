@@ -48,8 +48,17 @@ from typing import Any
 # Allowed enum values
 # --------------------------------------------------------------------------- #
 
-# Seven claim categories the LLM is asked to assign. Adding a new
-# one is non-breaking; renaming or removing is breaking.
+# Seven legacy claim categories the LLM is asked to assign.
+# SPRINT AI-16 adds three more (INTERNAL_BUSINESS, ASSUMPTION,
+# SCENARIO already covered; new ones below). Adding a new one
+# is non-breaking; renaming or removing is breaking.
+#
+# AI-16 extends the vocabulary to cover the brief's six-way
+# claim-kind classification (INTERNAL_BUSINESS, CALCULATED,
+# EXTERNAL_FACT, SCENARIO, ASSUMPTION, UNKNOWN). The legacy
+# labels are preserved for backward compatibility; the
+# ``ClaimKindClassifier`` (knowledge/claim_classifier.py) maps
+# legacy labels into the new vocabulary as a safety net.
 ALLOWED_CLAIM_TYPES: tuple[str, ...] = (
     "FACT",
     "CALCULATION",
@@ -58,6 +67,9 @@ ALLOWED_CLAIM_TYPES: tuple[str, ...] = (
     "SCENARIO",
     "EXTERNAL_FACT",
     "UNKNOWN",
+    # SPRINT AI-16 — three new claim kinds.
+    "INTERNAL_BUSINESS",
+    "ASSUMPTION",
 )
 
 # Allowed CALCULATION.source values. The validator enforces this
@@ -124,6 +136,50 @@ class Claim:
     confidence: int | None = None
     audit_log: tuple[dict, ...] = field(default_factory=tuple)
     user_provided: bool = False
+    # SPRINT AI-12 — three additive fields. All default-safe so
+    # legacy rows (and the parser's call to ``Claim(text=...,
+    # claim_type=..., ...)``) keep working unchanged.
+    # ``calculation_ids`` lists the deterministic calc IDs the
+    # claim is grounded in (e.g. ``("calc_growth_multiple_42",)``).
+    # ``source_authority`` is a 0..1 weight the
+    # ``ConfidenceCalculator`` looks at to dampen claims from
+    # less-trusted sources (e.g. ``0.6`` for ``EXTERNAL_FACT``
+    # vs ``0.95`` for ``URSBIZ_ENGINE``). ``status`` is the
+    # claim lifecycle — ``"active"`` is the default; the AI-12
+    # ``ClaimGraph`` (future sprint) will flip this to
+    # ``"superseded"`` or ``"rejected"`` when a newer claim
+    # replaces it.
+    calculation_ids: tuple[str, ...] = field(default_factory=tuple)
+    source_authority: float = 0.0
+    status: str = "active"
+
+    # SPRINT AI-14 — five additive lineage fields the evidence
+    # graph uses to walk every claim → its sources (profile /
+    # tool / calc / external / assumption). All default-safe so
+    # the parser's existing ``Claim(text=..., claim_type=..., ...)``
+    # construction sites keep working unchanged.
+    #   * ``claim_id`` — the stable ``ClaimNode.claim_id`` the
+    #     evidence-graph builder minted for this claim. Empty
+    #     string for legacy rows.
+    #   * ``tool_ids`` — the deterministic tool-envelope IDs the
+    #     claim is grounded in (the AI-13 ``StructuredToolEnvelope
+    #     .calculation_id`` for each tool the claim cites).
+    #   * ``freshness`` — ISO-8601 timestamp the engine stamped on
+    #     the underlying source. Empty string when the source
+    #     does not carry a freshness signal.
+    #   * ``validation_status`` — one of ``"supported"`` /
+    #     ``"unsupported"`` / ``"contradicted"`` / ``"estimated"``.
+    #     Default ``"supported"`` so pre-AI-14 rows (and claims
+    #     the engine did not inspect) round-trip as supported.
+    #   * ``authority`` — 0..1 weight the engine stamped on the
+    #     claim's primary source. Defaults to ``source_authority``
+    #     to preserve the AI-12 contract; when both are set, the
+    #     AI-14 evidence-graph builder prefers ``authority``.
+    claim_id: str = ""
+    tool_ids: tuple[str, ...] = field(default_factory=tuple)
+    freshness: str = ""
+    validation_status: str = "supported"
+    authority: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -350,6 +406,17 @@ class ClaimAwareResponse:
                     "confidence": c.confidence,
                     "audit_log": list(c.audit_log),
                     "user_provided": c.user_provided,
+                    "calculation_ids": list(c.calculation_ids),
+                    "source_authority": c.source_authority,
+                    "status": c.status,
+                    # SPRINT AI-14 — five additive lineage fields.
+                    # Default-empty so legacy rows on the wire
+                    # round-trip unchanged.
+                    "claim_id": c.claim_id,
+                    "tool_ids": list(c.tool_ids),
+                    "freshness": c.freshness,
+                    "validation_status": c.validation_status,
+                    "authority": c.authority,
                 }
                 for c in self.claims
             ],

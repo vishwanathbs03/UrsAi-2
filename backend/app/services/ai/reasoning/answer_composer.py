@@ -1,4 +1,4 @@
-"""AdaptiveAnswer — SPRINT AI-1 Stage 8.
+"""AdaptiveAnswer — SPRINT AI-1 Stage 8 + AI-12 Universal Reasoning.
 
 The legacy assistant renders the same 10-section consultant
 framing for every prompt. AI-1 keeps that as the default
@@ -11,6 +11,17 @@ framing for every prompt. AI-1 keeps that as the default
   * ``"missing_info"`` — What I can determine / What is
     missing / Why it matters / What to provide next. Used when
     the context is missing fields the answer requires.
+
+SPRINT AI-12 grows the catalogue to eight shells:
+
+  * ``"comparison"`` — side-by-side table shell for
+    "compare X vs Y" prompts.
+  * ``"scheme"`` — Schemes / Eligibility / How to apply /
+    Documents shell for government-scheme prompts.
+  * ``"external"`` — Source / Claim / Confidence / Source
+    authority shell for external-information prompts.
+  * ``"table_checklist"`` — flat table + checklist shell for
+    "give me a list of X" prompts.
 
 The composer does NOT overwrite the LLM's prose. It returns
 metadata only (``AdaptiveAnswer``) — the service uses it to
@@ -25,7 +36,10 @@ response. The LLM prose stays unchanged. Only the metadata
 envelope changes. The fallback path (no LLM) returns a
 default :class:`AdaptiveAnswer` with
 ``mode_used="expanded"`` so the deterministic path's audit
-trail is also uniformly tagged.
+trail is also uniformly tagged. The AI-12 shells are
+additive — every legacy ``possible_answer_structure``
+value (``"executive"``, ``"expanded"``, ``"scenario"``,
+``"missing_info"``) keeps its existing rendering.
 """
 from __future__ import annotations
 
@@ -33,7 +47,24 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-AnswerShell = Literal["executive", "expanded", "scenario", "missing_info"]
+# SPRINT AI-12 — expanded AnswerShell. Legacy 4 values stay
+# in place; ``"general_knowledge"`` and ``"business_analysis"``
+# are also valid because the question_understanding's
+# ``answer_mode`` carries those literals for capability-aware
+# rendering. Eight literals total.
+AnswerShell = Literal[
+    "executive",
+    "expanded",
+    "scenario",
+    "missing_info",
+    "comparison",
+    "scheme",
+    "external",
+    "general_knowledge",
+    "business_analysis",
+    "calculation",
+    "table_checklist",
+]
 
 
 @dataclass(frozen=True)
@@ -113,6 +144,47 @@ _SHELL_MISSING_INFO: tuple[str, ...] = (
     "4. WHAT TO PROVIDE NEXT",
 )
 
+# SPRINT AI-12 — 4 new shells + 3 capability-mode aliases.
+# The aliases reuse the existing 4 shells' section lists so the
+# renderer doesn't need new branches — capability-aware
+# rendering is a frontend follow-up.
+
+_SHELL_COMPARISON: tuple[str, ...] = (
+    "1. COMPARISON OVERVIEW",
+    "2. SIDE-BY-SIDE TABLE",
+    "3. KEY DIFFERENCES",
+    "4. RECOMMENDATION",
+)
+
+_SHELL_SCHEME: tuple[str, ...] = (
+    "1. ELIGIBLE SCHEMES",
+    "2. ELIGIBILITY CRITERIA",
+    "3. HOW TO APPLY",
+    "4. REQUIRED DOCUMENTS",
+    "5. NEXT STEPS",
+)
+
+_SHELL_EXTERNAL: tuple[str, ...] = (
+    "1. SOURCE",
+    "2. CLAIM",
+    "3. CONFIDENCE",
+    "4. SOURCE AUTHORITY",
+    "5. LIMITATIONS",
+)
+
+_SHELL_TABLE_CHECKLIST: tuple[str, ...] = (
+    "1. TABLE",
+    "2. CHECKLIST",
+    "3. NEXT STEPS",
+)
+
+# Aliases — capability answer_mode → legacy shell. The
+# renderer doesn't need to know the difference; the composer
+# just selects the right shell for the chosen mode.
+_SHELL_GENERAL_KNOWLEDGE: tuple[str, ...] = _SHELL_EXECUTIVE
+_SHELL_BUSINESS_ANALYSIS: tuple[str, ...] = _SHELL_EXPANDED
+_SHELL_CALCULATION: tuple[str, ...] = _SHELL_EXPANDED
+
 
 # --------------------------------------------------------------------------- #
 # Composer
@@ -182,6 +254,15 @@ _SECTIONS_BY_SHELL: dict[str, tuple[str, ...]] = {
     "expanded": _SHELL_EXPANDED,
     "scenario": _SHELL_SCENARIO,
     "missing_info": _SHELL_MISSING_INFO,
+    # SPRINT AI-12 — 4 new shells.
+    "comparison": _SHELL_COMPARISON,
+    "scheme": _SHELL_SCHEME,
+    "external": _SHELL_EXTERNAL,
+    "table_checklist": _SHELL_TABLE_CHECKLIST,
+    # Aliases — capability answer_mode → legacy shell.
+    "general_knowledge": _SHELL_GENERAL_KNOWLEDGE,
+    "business_analysis": _SHELL_BUSINESS_ANALYSIS,
+    "calculation": _SHELL_CALCULATION,
 }
 
 
@@ -195,19 +276,31 @@ def _pick_shell(
     Priority order:
 
       1. Plan's ``possible_answer_structure`` (when set) wins.
-      2. Understanding's ``unknowns`` (when non-empty) flips
+      2. Understanding's ``answer_mode`` (AI-12) — the
+         capability-aware answer rendering hint.
+      3. Understanding's ``unknowns`` (when non-empty) flips
          to ``"missing_info"``.
-      3. Understanding's ``complexity``:
+      4. Understanding's ``complexity``:
 
          * ``"simple"`` → ``"executive"``
          * ``"scenario"`` → ``"scenario"``
          * ``"moderate"`` / ``"strategic"`` → ``"expanded"``
 
-      4. Default ``"expanded"``.
+      5. Default ``"expanded"``.
     """
     plan_value = getattr(reasoning_plan, "possible_answer_structure", "") or ""
     if plan_value in _SECTIONS_BY_SHELL:
         return plan_value  # type: ignore[return-value]
+
+    # SPRINT AI-12 — fall back to the answer_mode before the
+    # complexity walk. The QU's answer_mode carries the
+    # capability-aware shape signal (e.g. ``"scenario"`` for
+    # "what if" prompts, ``"comparison"`` for "compare X vs Y").
+    answer_mode = (
+        getattr(question_understanding, "answer_mode", "") or ""
+    )
+    if answer_mode in _SECTIONS_BY_SHELL:
+        return answer_mode  # type: ignore[return-value]
 
     unknowns = getattr(question_understanding, "unknowns", ()) or ()
     if unknowns:
@@ -297,3 +390,96 @@ def _assumptions_for_shell(
             "Detailed numbers depend on the freshness of your business profile.",
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# SPRINT AI-14 — Dynamic Answer Composer
+# --------------------------------------------------------------------------- #
+#
+# ``compose_dynamic`` is the AI-14 thin shim layer the service.py
+# hookups call when ``AnswerRequirements`` are available. It keeps
+# the existing ``compose_adaptive_answer`` behaviour untouched (legacy
+# callers keep working) and reuses the 11-shell inventory
+# (``executive`` / ``expanded`` / ``scenario`` / ``comparison`` /
+# etc.) as layout strategies keyed on ``AnswerRequirements.needs_*``
+# flags. The actual section-order selection is delegated to
+# :func:`app.services.ai.reasoning.dynamic_section_selector
+# .select_sections` so the UX contract — hero direct-answer + max
+# 3 supports + fallback to ``expanded`` when exceeded — lives in
+# one place.
+# --------------------------------------------------------------------------- #
+
+
+def compose_dynamic(
+    *,
+    parsed: Any,
+    question_understanding: Any,
+    reasoning_plan: Any,
+    answer_requirements: Any | None = None,
+    contradiction_severity: str = "none",
+    unsupported_claim_count: int = 0,
+    tool_results: tuple = (),
+    context: Any | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """SPRINT AI-14 — return ``(shell, sections)`` for the renderer.
+
+    Behaviour
+    ---------
+
+    * ``shell`` is the legacy ``AdaptiveAnswer`` shell literal
+      (``executive`` / ``expanded`` / ``scenario`` / ``comparison``
+      / etc.). Selected by :func:`select_shell` with the
+      ``AnswerRequirements`` flags as input; falls back to
+      ``expanded`` when the section list exceeds ``MAX_SUPPORTING_SECTIONS``.
+    * ``sections`` is the ordered section list
+      (:func:`select_sections`) the composer + renderer should
+      iterate. ``direct_answer`` is always first (hero conclusion).
+
+    Legacy fallback
+    ---------------
+
+    When ``answer_requirements`` is ``None`` (no engine run,
+    or legacy caller), this function delegates to
+    :func:`compose_adaptive_answer` and returns its shell +
+    sections. The existing ``compose_adaptive_answer`` body is
+    NOT rewritten — only reused through this single seam.
+    """
+    try:
+        from app.services.ai.reasoning.dynamic_section_selector import (
+            select_sections,
+            select_shell,
+        )
+    except Exception:  # pragma: no cover — defensive
+        select_sections = None  # type: ignore[assignment]
+        select_shell = None  # type: ignore[assignment]
+
+    if select_sections is None or select_shell is None or answer_requirements is None:
+        # Legacy path — reuse the AI-12 composer. We can't read
+        # ``AdaptiveAnswer.sections`` without constructing one,
+        # so just call ``compose_adaptive_answer`` and use its
+        # ``shell`` literal; the renderer falls back to the
+        # legacy "expanded" layout.
+        legacy = compose_adaptive_answer(
+            parsed=parsed,
+            question_understanding=question_understanding,
+            reasoning_plan=reasoning_plan,
+            tool_results=tool_results,
+            context=context,
+        )
+        try:
+            sections = tuple(legacy.sections or ())
+        except Exception:
+            sections = ()
+        return legacy.shell, sections
+
+    sections = select_sections(
+        answer_requirements,
+        contradiction_severity=contradiction_severity,
+        unsupported_claim_count=unsupported_claim_count,
+    )
+    shell = select_shell(
+        answer_requirements,
+        sections=sections,
+        fallback_shell="expanded",
+    )
+    return shell, sections

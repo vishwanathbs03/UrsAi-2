@@ -90,6 +90,26 @@ function toLocalMessage(m: ChatMessageOut): LocalChatMessage {
     generation: m.generation
       ? (m.generation as unknown as LocalChatMessage["generation"])
       : undefined,
+    // Sprint AI-6 — server-stamped direct answer. The
+    // TrustFirstResponse shell renders this as the 10-second
+    // read.
+    direct_answer: m.direct_answer ?? null,
+    scenario_analysis: m.scenario_analysis
+      ? (m.scenario_analysis as unknown as LocalChatMessage["scenario_analysis"])
+      : undefined,
+    // Sprint AI-8 — Controlled Business Tool Router. The
+    // server-stamped, sanitised results of the 2-turn LLM
+    // tool loop. Propagated verbatim so the
+    // TechnicalProvenance disclosure inside
+    // TrustFirstResponse can render the "Used tools" pill
+    // row.
+    llm_tool_results: m.llm_tool_results ?? [],
+    // Sprint AI-13 — top-level mirrors of the three
+    // partial-failure fields. TrustFirstResponse renders
+    // them in the technical-provenance disclosure.
+    tool_execution_traces: m.tool_execution_traces ?? [],
+    partial_failure_disclosure: m.partial_failure_disclosure ?? null,
+    confidence_penalty: m.confidence_penalty ?? 0,
   };
 }
 
@@ -513,6 +533,7 @@ export function AssistantView() {
                         hasMessages={hasMessages}
                         memoryTopics={memoryTopics}
                         onFollowUp={(label) => submit(label)}
+                        context={state.status === "ready" ? state.context : null}
                       />
                       <div className="flex flex-col gap-3 border-t border-border bg-background/30 p-3 sm:p-4">
                         <SmartFollowUps

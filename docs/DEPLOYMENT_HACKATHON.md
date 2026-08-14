@@ -76,7 +76,7 @@ DATABASE_URL="sqlite:///./ursbiz_prod.db" \
 LOG_LEVEL=INFO \
 AI_PROVIDER=placeholder \
 TRUSTED_PROXY_HOPS=1 \
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 
 # 2. (in another shell) seed the demo judge account.
 cd backend
@@ -85,13 +85,13 @@ python ../scripts/demo/seed_demo_business.py
 
 # 3. Frontend (rebuild with the right backend URL).
 cd frontend
-NEXT_PUBLIC_API_URL="http://127.0.0.1:8000" \
+NEXT_PUBLIC_API_URL="http://127.0.0.1:8001" \
 NODE_OPTIONS="--max-old-space-size=8192" \
 npm run build
 
 # 4. Frontend (production server).
 cd frontend
-NEXT_PUBLIC_API_URL="http://127.0.0.1:8000" \
+NEXT_PUBLIC_API_URL="http://127.0.0.1:8001" \
 NODE_ENV=production \
 PORT=3000 \
 HOSTNAME=127.0.0.1 \

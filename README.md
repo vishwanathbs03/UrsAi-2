@@ -3,7 +3,7 @@
 **One-sentence value proposition:** UrsBiz gives a micro- or small-business owner a stored business profile, a deterministic 0–100 Profile Readiness Score, profile-matched government schemes with cited sources, and bank-ready PDF/CSV reports — every number reproducible from the profile.
 
 > **Live demo:** *(public URL pending deployment — see `docs/DEPLOYMENT_HACKATHON.md` and `H7_6_PUBLIC_DEPLOYMENT_REPORT.md` for the verified smoke-test path)*
-> **Demo credentials (seeded workspace):** `acme.textiles@example.com` / `AcmeDemoPass1` — Acme Textiles, Tirupur, Tamil Nadu (12 employees, ₹1.8 Cr → ₹3 Cr target)
+> **Demo credentials (seeded workspace):** `acme.textiles@example.com` / `AcmeDemoPass1` — Acme Textiles, Tirupur (12 employees, ₹1.8 Cr annual revenue, ₹3 Cr target encoded as a `BusinessGoal` row titled "Grow annual revenue to ₹3 Cr" — there is no `Business.target_revenue` column)
 > **Architecture diagram:** [`docs/architecture-hackathon.svg`](docs/architecture-hackathon.svg)
 
 ---
@@ -46,8 +46,8 @@ Every outcome below is reproducible from the seeded demo workspace and is assert
 | # | Outcome | How to verify |
 |---|---------|---------------|
 | **1** | **Deterministic 0–100 Profile Readiness Score** — measures how completely the founder has filled in their business profile across six weighted sections (profile completeness, business info, products/services, team, financial, online presence). Same inputs → same score, every run. **It is not a measure of business health or risk;** it tells you how complete the digital twin is. | `GET /api/v1/business/scores` returns the score and per-section breakdowns for the demo workspace. Source: `backend/app/services/health_score_service.py`. |
-| **2** | **Profile-matched schemes** with match %, source authority, last-verified date, and disclaimer per match. Catalog has **7 curated entries** — CGTMSE, ZED, PMEGP, MAI, MUDRA Shishu, NSIC, Udyam — sourced from `backend/app/services/schemes_sprint16_service.py` (`SCHEMES_CATALOG`). | `GET /api/v1/business/schemes` returns the on-disk catalog matches. The catalog itself lives in `backend/app/services/schemes_sprint16_service.py`, loaded into a knowledge base at startup. |
-| **3** | **3m / 6m / 12m scenario horizons** for forward-looking estimates, each with confidence and a `no guarantee` label, plus **1-click PDF + CSV reports** formatted for bank-loan applications. | `GET /api/v1/analytics/forecast` returns the horizons; the Reports UI exports PDF (ReportLab) and CSV with the health snapshot, scheme matches, and scenarios. |
+| **2** | **Profile-matched schemes** with match %, source authority, last-verified date, and disclaimer per match. Catalog has **7 curated entries** — CGTMSE, ZED, PMEGP, Export Promotion (Capital Goods), MUDRA Shishu, NSIC, Udyam — sourced from `backend/app/services/schemes_sprint16_service.py` (`SCHEMES_CATALOG`). | `GET /api/v1/business/schemes` returns the on-disk catalog matches. The catalog itself lives in `backend/app/services/schemes_sprint16_service.py`, loaded into a knowledge base at startup. |
+| **3** | **3m / 6m / 12m scenario horizons** for forward-looking estimates, each with confidence and a `no guarantee` label, plus **1-click PDF + CSV reports** formatted for bank-loan applications. | `GET /api/v1/business/predictions/{growth,revenue,risk}` and `GET /api/v1/analytics` return the horizon scenarios; the Reports UI exports PDF (ReportLab) and CSV with the health snapshot, scheme matches, and scenarios. |
 
 We use **"Profile match"**, never "You are eligible" / "Approved" / "Guaranteed" / "You will receive funding" — see [`docs/HACKATHON_VISION.md`](docs/HACKATHON_VISION.md).
 
@@ -121,6 +121,9 @@ cp .env.local.example .env.local
 
 ```bash
 # Terminal 1 — backend on :8001
+# (canonical dev port. Matches backend/.env.example, the
+# frontend rewrite proxy fallback in frontend/next.config.mjs,
+# and the production overlay.)
 cd backend
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
 
@@ -152,20 +155,57 @@ See [`docs/DEPLOYMENT_HACKATHON.md`](docs/DEPLOYMENT_HACKATHON.md) for the conta
 
 ## Verification Commands
 
-Run the deterministic verifiers to confirm the claims above:
+Run the deterministic verifiers to confirm the claims above. Every command below is run from the **repo root** unless otherwise noted.
 
 ```bash
-# Auth + business persistence (H7.1)
-python backend/tests/test_h7_1_business_persistence.py
-
-# Grounded generative AI + safe-placeholder fallback (H7.3)
-python backend/tests/test_h7_3_grounded_generative_ai.py
-
-# Existing suite
-pytest backend/tests/ -v
+# Backend health (live + ready)
+curl http://localhost:8001/api/v1/health/live
+curl http://localhost:8001/api/v1/health/ready
 ```
 
+Test files use a per-process SQLite fixture (`backend/atlas_ai.db`) that is wiped on every pytest run by `tests/conftest.py`. The fixture requires `pydantic-settings` to read `backend/.env` — i.e. pytest must run **with the `backend/` directory as the CWD** so the relative `env_file=".env"` path resolves. From the repo root:
+
+```bash
+cd backend
+
+# Auth + business persistence (H7.1)
+pytest tests/test_h7_1_business_persistence.py -v
+
+# Grounded generative AI + safe-placeholder fallback (H7.3)
+pytest tests/test_h7_3_grounded_generative_ai.py -v
+
+# Wire-payload completion (H7.8C — top-level provenance fields)
+pytest tests/test_h7_8c_wire_payload_completion.py -v
+
+# Full suite (52 test files, 232 tests)
+pytest tests/ -v
+```
+
+> The tests can also be invoked from the repo root via `pytest backend/tests/...` — `pyproject.toml` sets `pythonpath = ["backend"]` for that case — but the SQLite URL still resolves to the `.env` in the *current* working directory, so running from `backend/` is the most reliable form. Do not run the test files directly with `python backend/tests/test_*.py`; `pytest` is the supported runner.
+
 Older verifier scripts under `scripts/verification/` exercise specific H5–H6 contracts (assistant default consultant, history, brand trust, credibility, deployment) — they print PASS/FAIL per check and are safe to re-run.
+
+### Seed / reset the demo workspace
+
+If you don't have `backend/ursbiz_prod.db` (or want to rebuild it from scratch):
+
+```bash
+# Drop only the demo rows (safe; prompts for confirmation unless --yes)
+python scripts/demo/reset_demo_business.py --yes
+
+# (Re)seed the demo user + business. Idempotent. Use env vars to override
+# the defaults (DEMO_USER_EMAIL, DEMO_USER_PASSWORD, DEMO_USER_FULL_NAME,
+# DEMO_BUSINESS_NAME, DEMO_TARGET_REVENUE, DEMO_CURRENT_REVENUE).
+python scripts/demo/seed_demo_business.py
+```
+
+Then point the backend at it:
+
+```bash
+cd backend
+DATABASE_URL=sqlite:///./ursbiz_prod.db \
+  uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
 
 ---
 
@@ -189,7 +229,7 @@ Read this section before quoting the marketing site.
 1. **No embeddings, no vector store.** The AI layer is rule engines + an optional LLM rephraser. Any "vector search over official gazettes" claim is wrong and was removed from the marketing copy in P7.
 2. **No AES-256 at rest.** Auth uses JWT HS256 with HTTPOnly cookies. Database-at-rest encryption depends on the deployment platform (Postgres volume encryption, disk encryption, etc.) — UrsBiz does not provide it.
 3. **No sub-50ms latency SLO.** Measured latency on dev hardware is recorded in `H7_6_PUBLIC_DEPLOYMENT_REPORT.md`; do not treat it as a global SLA.
-4. **Scheme catalog is 7 curated entries** — CGTMSE, ZED, PMEGP, MAI (Market Access Initiative), MUDRA Shishu, NSIC, Udyam. Authoritative source: `backend/app/services/schemes_sprint16_service.py` → `SCHEMES_CATALOG`. Each entry is profile-matched, not all match every business. The catalog grows under the same module as new schemes are verified.
+4. **Scheme catalog is 7 curated entries** — CGTMSE, ZED, PMEGP, Export Promotion (Capital Goods), MUDRA Shishu, NSIC, Udyam. Authoritative source: `backend/app/services/schemes_sprint16_service.py` → `SCHEMES_CATALOG`. Each entry is profile-matched, not all match every business. The catalog grows under the same module as new schemes are verified.
 5. **No autonomous background scheduler.** "Daily briefings" are produced on demand by hitting the AI endpoint; no cron or background worker ships in this codebase.
 6. **Single-process demo DB.** `backend/ursbiz_prod.db` is SQLite and is for the hackathon demo. For multi-user / production traffic, switch `DATABASE_URL` to PostgreSQL.
 7. **No national-scale impact claims.** Statistics about "63M+ MSMEs", "30% GDP contribution", or "110M+ employment impact" were removed because UrsBiz has no measurement methodology for them. Outcome numbers in the demo are demo numbers.

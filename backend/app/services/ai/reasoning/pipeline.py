@@ -124,6 +124,22 @@ class ReasoningPlan:
     unknowns: tuple[str, ...] = ()
     possible_answer_structure: str = "expanded"
 
+    # SPRINT AI-12 — Universal Reasoning Layer. 5 more additive
+    # fields, all default-safe, all derived from the
+    # ``QuestionUnderstanding`` instance passed at construction
+    # time. Field ordering is preserved to keep the
+    # frozen-dataclass argspec monotonic across all AI-N sprints.
+    required_evidence_types: tuple[str, ...] = ()
+    required_tools: tuple[str, ...] = ()
+    answer_mode: str = "general_knowledge"
+    expected_output_sections: tuple[str, ...] = ()
+    # The :class:`EvidenceRequirements` produced by the
+    # ``EvidenceRequirementPlanner``. Typed as ``Any`` to keep
+    # the pipeline module cycle-free (the planner lives in a
+    # sibling submodule). ``None`` until AI-12 runs.
+    evidence_requirements: Any = None
+    tool_plan: Any = None
+
 
 class ReasoningPipeline:
     """8-Stage Explicit Reasoning Engine.
@@ -256,6 +272,15 @@ class ReasoningPipeline:
         q_calcs: tuple[str, ...] = ()
         q_unknowns: tuple[str, ...] = ()
         q_structure = "expanded"
+        # SPRINT AI-12 — five more additive fields derived from
+        # the same ``QuestionUnderstanding``. Defaults keep
+        # legacy call sites working unchanged.
+        q_required_evidence_types: tuple[str, ...] = ()
+        q_required_tools: tuple[str, ...] = ()
+        q_answer_mode = "general_knowledge"
+        q_expected_output_sections: tuple[str, ...] = ()
+        q_evidence_requirements: Any = None
+        q_tool_plan: Any = None
         if question_understanding is not None:
             q_interp = getattr(question_understanding, "user_intent", "") or ""
             q_services = tuple(
@@ -273,6 +298,22 @@ class ReasoningPipeline:
             elif complexity == "simple":
                 q_structure = "executive"
             # default = "expanded"
+            # AI-12 — pass through the new fields.
+            q_required_evidence_types = tuple(
+                getattr(question_understanding, "required_evidence_types", ()) or ()
+            )
+            q_required_tools = tuple(
+                getattr(question_understanding, "required_tools", ()) or ()
+            )
+            q_answer_mode = str(
+                getattr(question_understanding, "answer_mode", "general_knowledge")
+                or "general_knowledge"
+            )
+            q_expected_output_sections = tuple(
+                getattr(
+                    question_understanding, "expected_output_sections", ()
+                ) or ()
+            )
 
         return ReasoningPlan(
             intent="general",
@@ -286,6 +327,13 @@ class ReasoningPipeline:
             calculations_required=q_calcs,
             unknowns=q_unknowns,
             possible_answer_structure=q_structure,
+            # SPRINT AI-12 — Universal Reasoning Layer.
+            required_evidence_types=q_required_evidence_types,
+            required_tools=q_required_tools,
+            answer_mode=q_answer_mode,
+            expected_output_sections=q_expected_output_sections,
+            evidence_requirements=q_evidence_requirements,
+            tool_plan=q_tool_plan,
         )
 
     def _stage_1_understand_intent(self, prompt: str) -> ReasoningStageResult:

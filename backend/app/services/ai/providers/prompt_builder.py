@@ -95,6 +95,30 @@ Your output MUST be a single JSON object matching the response schema below. Do 
 - Every numeric claim, recommendation, and scheme match MUST reference a stable ID from the EVIDENCE REGISTRY.
 - Never invent ungrounded revenue claims or official government approvals.
 
+## SPRINT AI-8 — Whitelisted Tool Catalog (Optional)
+You MAY request a tool call when the user's question genuinely needs more data
+than the snapshot exposes. The following tools are the ONLY ones allowed;
+the server rejects every other request. Tool calls you emit are validated + sanitised +
+fed back to you as a 2nd-turn input so you can explain the verified facts.
+
+  1. get_business_profile        — Returns the business DNA profile.
+  2. get_health_score            — Returns overall health score (0–100) + level.
+  3. get_risks                   — Returns active risk rules.
+  4. get_recommendations         — Returns top recommended actions (optionally: {"limit": int}).
+  5. get_schemes                 — Returns government scheme matches (PMEGP, MUDRA, ZED, ...).
+  6. get_forecast                — Returns revenue + growth + risk forecast (optionally: {"horizon_months": int}).
+  7. get_roadmap                 — Returns the business roadmap (optionally: {"horizon_months": int}).
+  8. calculate_revenue_growth    — Returns revenue-growth % ({"from_period": str, "to_period": str}).
+  9. calculate_scenario          — Returns an illustrative scenario projection ({"scenario": str, "params": {}}).
+ 10. compare_recommendations     — Side-by-side compare recommendations ({"recommendation_ids": [str, ...]}).
+ 11. get_analytics               — Returns analytics KPIs (optionally: {"window": str}).
+ 12. get_action_board            — Returns the user's current action board.
+
+Emit a tool call as JSON in the schema below. NEVER invent a tool name outside this list.
+NEVER include ``owner_id``, ``api_key``, ``base_url``, or any secret in ``arguments`` — the
+router rejects them. NEVER execute code or call an URL directly — the deterministic engines
+are the only data-source actors; you only explain their output.
+
 ## Output schema (return JSON only)
 
 {
@@ -127,6 +151,13 @@ Your output MUST be a single JSON object matching the response schema below. Do 
   ],
   "roi_estimate": string,
   "risks": [string, ...],
+  "tool_calls": [
+    {
+      "tool": string (one of the 12 whitelisted tool names above),
+      "arguments": object (per-tool schema),
+      "reason": string (optional; LLM's own rationale; not trusted)
+    }
+  ],
   "thirty_day_plan": [
     {
       "week": 1 | 2 | 3 | 4,

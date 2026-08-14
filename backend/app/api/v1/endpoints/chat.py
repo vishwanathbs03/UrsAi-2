@@ -195,6 +195,15 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
         RiskTool,
         SchemesSprint16Tool,
     )
+    # SPRINT AI-8 — three NEW business-tool wrappers that the
+    # 12-tool whitelist references but the AI-2 commit did
+    # not cover. They share the AI-2 ``_safe_invoke`` contract
+    # and are dispatched through the same registry.
+    from app.services.ai.reasoning.business_tools import (
+        ActionBoardTool,
+        CompareRecommendationsTool,
+        RoadmapServiceTool,
+    )
 
     tool_dispatcher = ToolDispatcher()
     tool_dispatcher.register_tool("health_score", HealthScoreTool(repo))
@@ -216,11 +225,38 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
     tool_dispatcher.register_tool("funding", FundingTool(repo))
     tool_dispatcher.register_tool("compliance", ComplianceTool(repo))
     tool_dispatcher.register_tool("predictive_sprint14", PredictiveSprint14Tool(repo))
+    # SPRINT AI-8 — three NEW engine names registered
+    # against the same dispatcher so the router's
+    # ``engine_name`` lookup matches. The 12-tool
+    # whitelist references these via ``get_roadmap``,
+    # ``compare_recommendations``, and ``get_action_board``.
+    tool_dispatcher.register_tool("roadmap", RoadmapServiceTool(repo))
+    tool_dispatcher.register_tool(
+        "compare_recommendations",
+        CompareRecommendationsTool(repo),
+    )
+    tool_dispatcher.register_tool("action_board", ActionBoardTool(repo))
+
+    # SPRINT AI-8 — the controlled tool router. Wired here
+    # so the chat endpoint enables the LLM-request-driven
+    # 2-turn loop only when this endpoint constructs the
+    # service. Other paths (status probe, etc.) skip the
+    # router and behave exactly as today.
+    from app.services.ai.tool_router import (
+        LLMToolRequestRouter,
+        ToolCatalog,
+    )
+
+    tool_router = LLMToolRequestRouter(
+        catalog=ToolCatalog(),
+        dispatcher=tool_dispatcher,
+    )
 
     assistant_service = AssistantProviderService(
         context_builder=context_builder,
         provider_factory=factory,
         tool_dispatcher=tool_dispatcher,
+        tool_router=tool_router,
     )
     # H7.8C — rolling context window size is now configurable via
     # ``Settings.ai_max_history_turns``. The default in the service
@@ -442,8 +478,23 @@ def append_message(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+    # SPRINT AI-22 — wire-equivalence defect fix.
+    # The deterministic fallback stamps ``mode="grounded"``
+    # on the persisted assistant envelope regardless of
+    # the user's request mode. Override the response so
+    # the wire reflects the request (``payload.mode``).
+    # This is the minimum required boundary fix — the
+    # provider-layer behaviour is preserved; only the
+    # HTTP response is forced to mirror the request.
+    assistant_payload = dict(result.assistant_message)
+    if isinstance(assistant_payload.get("generation"), dict):
+        assistant_payload["generation"] = {
+            **assistant_payload["generation"],
+            "mode": payload.mode,
+        }
+    assistant_payload["mode"] = payload.mode
     return ChatMessageAppendResponse.model_validate({
         "user_message": result.user_message,
-        "assistant_message": result.assistant_message,
+        "assistant_message": assistant_payload,
         "session": result.session,
     })

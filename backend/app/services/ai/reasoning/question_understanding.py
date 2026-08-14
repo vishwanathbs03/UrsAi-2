@@ -81,6 +81,23 @@ Topic = Literal[
 ]
 
 
+# SPRINT AI-12 — Universal Reasoning Layer.
+# 8-literal answer-mode vocabulary. Drives both the
+# ``EvidenceRequirementPlanner`` and the answer-composer shell
+# selection (the existing composer already picks from 4 shells;
+# AI-12 adds 4 more: comparison / scheme / external / table_checklist).
+AnswerMode = Literal[
+    "general_knowledge",
+    "business_analysis",
+    "calculation",
+    "scenario",
+    "comparison",
+    "scheme",
+    "external",
+    "mixed",
+]
+
+
 # --------------------------------------------------------------------------- #
 # Topic heuristic
 # --------------------------------------------------------------------------- #
@@ -237,6 +254,29 @@ class QuestionUnderstanding:
     relevant_existing_intents: tuple[QuestionIntent, ...] = field(default_factory=tuple)
     sentiment: str = "neutral"
     complexity: Complexity = "moderate"
+    # SPRINT AI-11 — Universal Business-Aware Assistant hardening.
+    # Additive fields that describe what capabilities the question
+    # requires and how strongly it depends on the user's business
+    # data. Both default to safe empty / NONE values so every
+    # pre-AI-11 call site keeps working unchanged.
+    capability: tuple[str, ...] = field(default_factory=tuple)
+    business_dependency: str = "none"
+    # SPRINT AI-12 — Universal Reasoning Layer. Eight more
+    # additive fields that drive the tool planner / evidence
+    # requirement planner / adaptive answer shell. All default
+    # to safe empty / False / ``"general_knowledge"`` so every
+    # pre-AI-12 call site (and every pre-AI-12 frozen dataclass
+    # stored on disk) deserialises unchanged. Field is appended
+    # at the END to preserve the additive-compat pattern of
+    # every AI-N sprint.
+    required_evidence_types: tuple[str, ...] = field(default_factory=tuple)
+    required_tools: tuple[str, ...] = field(default_factory=tuple)
+    requires_calculation: bool = False
+    requires_scenario_analysis: bool = False
+    requires_forecast: bool = False
+    requires_external_information: bool = False
+    answer_mode: str = "general_knowledge"
+    expected_output_sections: tuple[str, ...] = field(default_factory=tuple)
     parsed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
@@ -262,6 +302,20 @@ class QuestionUnderstanding:
             ],
             "sentiment": self.sentiment,
             "complexity": self.complexity,
+            "capability": list(self.capability),
+            "business_dependency": self.business_dependency,
+            # SPRINT AI-12 — Universal Reasoning Layer wire
+            # projection. Mirrors the 8 additive dataclass fields
+            # so the GenerationMeta envelope carries the
+            # capability-aware reasoning trace.
+            "required_evidence_types": list(self.required_evidence_types),
+            "required_tools": list(self.required_tools),
+            "requires_calculation": self.requires_calculation,
+            "requires_scenario_analysis": self.requires_scenario_analysis,
+            "requires_forecast": self.requires_forecast,
+            "requires_external_information": self.requires_external_information,
+            "answer_mode": self.answer_mode,
+            "expected_output_sections": list(self.expected_output_sections),
             "parsed_at": self.parsed_at,
         }
 
@@ -322,7 +376,7 @@ def _is_business_specific(prompt: str, context: Any) -> bool:
         return False
 
     # Possessive or first-person phrasing
-    if re.search(r"\b(my|our|i should|we should|i am|we are)\b", text):
+    if re.search(r"\b(my|our|i should|we should|i am|we are|me|help me)\b", text):
         return True
     if re.search(r"\bshould i\b", text):
         return True
@@ -330,7 +384,30 @@ def _is_business_specific(prompt: str, context: Any) -> bool:
     # Cross-check against the existing classifier — if the
     # flagship router matched, the prompt is implicitly
     # business-specific.
-    if classify_intent(prompt) is not QuestionIntent.GENERAL:
+    # Sprint AI-21 — the legacy GOVERNMENT_SCHEMES intent
+    # fires for any prompt with "scheme/subsidy/mudra"
+    # keyword, but the brief explicitly classifies
+    # "What government scheme is available?" as EXTERNAL.
+    # The intent-bridge check is too aggressive for the
+    # scheme + export families — suppress the bridge for
+    # those intents ONLY when the prompt carries no
+    # personalisation tokens. A prompt like "Are there
+    # schemes that can help me buy machinery?" still has
+    # "me" → business-specific (the bridge would have
+    # flipped it but the suppression would have undone
+    # that — we keep the personalisation).
+    intent = classify_intent(prompt)
+    if intent is QuestionIntent.GENERAL:
+        pass
+    elif intent in (
+        QuestionIntent.GOVERNMENT_SCHEMES,
+        QuestionIntent.EXPORT_EXPANSION,
+    ):
+        # External family — keep external unless the
+        # prompt carries personalisation tokens (already
+        # handled above).
+        pass
+    elif intent is not None:
         return True
 
     # Match against known context fields when available
@@ -609,6 +686,714 @@ def _build_user_intent_string(topic: Topic, prompt: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# SPRINT AI-11 — capability + business_dependency derivation.
+#
+# These two fields are additive (defaults are empty tuple / "none")
+# so every pre-AI-11 call site keeps working unchanged. The
+# derivation reuses the existing topic + complexity + is_business_specific
+# flags; it does NOT introduce a new keyword scan of its own.
+# --------------------------------------------------------------------------- #
+
+
+# The list mirrors the brief's §4 capability vocabulary. A prompt
+# can match more than one (e.g. "Explain EBITDA AND tell me
+# whether mine is healthy" → GENERAL_KNOWLEDGE + BUSINESS_ANALYSIS).
+# When ≥ 2 capabilities fire AND they cross the general/business
+# boundary, the builder rolls up to MIXED.
+_ALLOWED_CAPABILITIES: tuple[str, ...] = (
+    "GENERAL_KNOWLEDGE",
+    "BUSINESS_FACT",
+    "BUSINESS_ANALYSIS",
+    "CALCULATION",
+    "RECOMMENDATION",
+    "SCENARIO",
+    "FORECAST",
+    "COMPARISON",
+    "FINANCIAL",
+    "OPERATIONAL",
+    "RISK",
+    "GOVERNMENT_SCHEME",
+    "EXPORT",
+    "ROADMAP",
+    "EXTERNAL_INFORMATION",
+    "MIXED",
+    "UNKNOWN",
+)
+
+
+def _detect_capability(
+    *,
+    lower: str,
+    topic: str,
+    is_business_specific: bool,
+    is_purely_educational: bool,
+    complexity: str,
+) -> tuple[str, ...]:
+    """Return the capability tuple for the prompt.
+
+    Deterministic: same inputs → same tuple. Order is stable
+    (the list below defines priority — first match wins the
+    slot, but multiple slots can fire).
+
+    Algorithm
+    ---------
+    1. Start with the topic → base capability mapping.
+    2. Add overlays for explicit comparison / forecast /
+       calculation phrasing so those surface even when the
+       topic is "education" (e.g. "compare my margin to the
+       industry average" → topic=education BUT
+       capability=COMPARISON+FINANCIAL).
+    3. If is_purely_educational AND not is_business_specific,
+       prepend GENERAL_KNOWLEDGE so the renderer can label the
+       answer's trust category correctly.
+    4. If the prompt references an external / general source
+       ("common ways …", "industry best practice …",
+       "what is …", "explain …") AND references the user's own
+       data, fire MIXED — the renderer renders general knowledge
+       + business evidence side-by-side.
+    5. If no slot fires, default to UNKNOWN so the renderer
+       never leaves the user staring at a blank trust label.
+    """
+    caps: list[str] = []
+
+    # 1. topic → base capability.
+    _TOPIC_TO_CAPABILITY: dict[str, str] = {
+        "finance": "FINANCIAL",
+        "marketing": "BUSINESS_ANALYSIS",
+        "operations": "OPERATIONAL",
+        "hiring": "OPERATIONAL",
+        "export": "EXPORT",
+        "strategy": "BUSINESS_ANALYSIS",
+        "education": "GENERAL_KNOWLEDGE",
+        "risk": "RISK",
+        "scenario": "SCENARIO",
+        "general": "BUSINESS_ANALYSIS",
+    }
+    base = _TOPIC_TO_CAPABILITY.get(topic)
+    if base and base not in caps:
+        caps.append(base)
+
+    # 2. overlays — these can fire ON TOP OF the topic-based
+    # capability. Each overlay is a strict keyword cluster; the
+    # cluster is intentionally narrow to avoid over-firing.
+    if any(
+        k in lower
+        for k in ("compare", "vs ", "versus", "difference between")
+    ):
+        if "COMPARISON" not in caps:
+            caps.append("COMPARISON")
+    if any(
+        k in lower
+        for k in (
+            "forecast", "predict", "projection", "next year", "next quarter",
+            # Sprint AI-21 — synonym coverage for FORECAST.
+            "trajectory", "expected revenue", "projected order",
+            "outlook", "projected", "next 18 months",
+            "18 months out", "next month revenue",
+        )
+    ):
+        if "FORECAST" not in caps:
+            caps.append("FORECAST")
+    if any(
+        k in lower
+        for k in (
+            "calculate", "compute", "what is my", "percentage", "%", "growth rate",
+            # Sprint AI-21 — synonym coverage for CALCULATION.
+            "growth multiple", "by how much", "how much must we",
+            "how much working capital", "how much cash",
+            "how much revenue", "how much do we need",
+            "how many employees", "how many can we",
+            "how many senior", "how many workers",
+            "runway", "burn rate", "multiple between",
+        )
+    ):
+        if "CALCULATION" not in caps:
+            caps.append("CALCULATION")
+    if any(
+        k in lower
+        for k in (
+            "scheme", "schemes", "subsidy", "msme", "udyam",
+            "eligibility", "eligible",
+        )
+    ):
+        if "GOVERNMENT_SCHEME" not in caps:
+            caps.append("GOVERNMENT_SCHEME")
+    if any(
+        k in lower
+        for k in (
+            "roadmap", "12 month", "twelve month", "12-month",
+            "playbook", "this month", "next month", "this quarter",
+        )
+    ):
+        if "ROADMAP" not in caps:
+            caps.append("ROADMAP")
+    if any(
+        k in lower
+        for k in (
+            "recommend", "suggestion", "should i", "how can i",
+            "ways to", "how do i",
+            # Sprint AI-21 — synonym + follow-up coverage.
+            "what should we focus", "what should we tackle",
+            "most impactful", "move the needle",
+            "next 30 days", "which single move",
+            "where should we", "what do you suggest",
+            "what's the most impactful",
+        )
+    ):
+        if "RECOMMENDATION" not in caps:
+            caps.append("RECOMMENDATION")
+    if any(
+        k in lower
+        for k in (
+            "how many", "what is my employee", "do i have", "my employees",
+            # Sprint AI-21 — pronoun coverage. The original
+            # trigger only matched "my" — extend to "our",
+            # "we", "us", "the company", "the firm", "the
+            # business" so prompts like "What's our current
+            # headcount?" or "What is our annual revenue?"
+            # surface ``BUSINESS_FACT`` instead of dropping
+            # to the topic-derived BUSINESS_ANALYSIS.
+            "our", "we are", "our team", "our company",
+            "our business", "our revenue", "our headcount",
+            "our employees", "our score", "our industry",
+            "our location", "our company name",
+            "company name", "legal name", "where is",
+            "how many", "headcount", "employee count",
+        )
+    ):
+        if "BUSINESS_FACT" not in caps:
+            caps.append("BUSINESS_FACT")
+    if any(
+        k in lower
+        for k in (
+            "external", "industry", "industry best", "industry average",
+            "common ways", "best practice", "typical",
+        )
+    ):
+        if "EXTERNAL_INFORMATION" not in caps:
+            caps.append("EXTERNAL_INFORMATION")
+    if complexity == "scenario":
+        if "SCENARIO" not in caps:
+            caps.append("SCENARIO")
+    # Sprint AI-21 — RISK overlay for prompts that don't
+    # trip the topic heuristic but carry risk meaning
+    # (over-exposed, currency swings, customer concentration,
+    # commodity shocks, regulatory changes, etc.).
+    if any(
+        k in lower
+        for k in (
+            "exposed", "exposure", "currency swings", "currency swing",
+            "customer concentration", "over-reliant", "single customer",
+            "regulatory changes", "commodity price", "commodity shock",
+            "resilient", "resilience", "vulnerable", "vulnerability",
+            "if a competitor", "customer churn",
+        )
+    ):
+        if "RISK" not in caps:
+            caps.append("RISK")
+    # Sprint AI-21 — OPERATIONAL overlay for prompts that
+    # don't trip the topic heuristic but carry operational
+    # meaning (over-staffed, productivity, inventory turnover,
+    # throughput, etc.).
+    if any(
+        k in lower
+        for k in (
+            "over-staffed", "under-staffed", "staffed",
+            "productivity", "inventory turnover", "throughput",
+            "lose the most time", "bottleneck", "headcount",
+            "warehouse", "logistics",
+        )
+    ):
+        if "OPERATIONAL" not in caps:
+            caps.append("OPERATIONAL")
+
+    # 3. prepend GENERAL_KNOWLEDGE when the prompt is purely
+    # educational AND not about the user's business.
+    if is_purely_educational and not is_business_specific:
+        if "GENERAL_KNOWLEDGE" not in caps:
+            caps.insert(0, "GENERAL_KNOWLEDGE")
+
+    # 4. rollup to MIXED when ≥ 2 capabilities cross the
+    # general/business boundary.
+    _GENERAL = {"GENERAL_KNOWLEDGE", "EXTERNAL_INFORMATION", "UNKNOWN"}
+    _BUSINESS = {
+        "BUSINESS_FACT", "BUSINESS_ANALYSIS", "CALCULATION", "RECOMMENDATION",
+        "SCENARIO", "FORECAST", "COMPARISON", "FINANCIAL", "OPERATIONAL",
+        "RISK", "GOVERNMENT_SCHEME", "EXPORT", "ROADMAP",
+    }
+    general_hits = [c for c in caps if c in _GENERAL]
+    business_hits = [c for c in caps if c in _BUSINESS]
+    if general_hits and business_hits and "MIXED" not in caps:
+        caps.append("MIXED")
+
+    # 5. default fallback.
+    if not caps:
+        caps.append("UNKNOWN")
+
+    # Filter to the allowed vocabulary (defensive — guards
+    # against typos in the topic-mapping above).
+    return tuple(c for c in caps if c in _ALLOWED_CAPABILITIES)
+
+
+def _detect_business_dependency(
+    *,
+    lower: str,
+    is_business_specific: bool,
+    is_purely_educational: bool,
+    capability: tuple[str, ...],
+) -> str:
+    """Return ``"required"``, ``"optional"``, or ``"none"``.
+
+    The brief's contract:
+
+      * **REQUIRED** — the question cannot be answered without
+        the user's business data (e.g. "How many employees
+        do I have?", "What is my EBITDA?").
+      * **OPTIONAL** — the question can be answered from
+        general knowledge, but business data would
+        personalise the answer (e.g. "Common ways textile
+        companies reduce working capital", "What are three
+        ways I can reduce electricity costs?").
+      * **NONE** — the question is pure general knowledge
+        (e.g. "What is EBITDA?", "Explain working capital").
+    """
+    # Explicit business-specific phrasing → REQUIRED.
+    if is_business_specific:
+        return "required"
+
+    # Capability-driven override: capabilities that always need
+    # business data even when the prompt doesn't use "my/our/I".
+    # The check intentionally SKIPS the override when
+    # ``EXTERNAL_INFORMATION`` is also present — the question is
+    # framed as industry / common-practice, so business data is
+    # an optional personalisation, not a hard requirement.
+    # Sprint AI-21 — the brief's "What government scheme is
+    # available?" → EXTERNAL semantics removes
+    # ``GOVERNMENT_SCHEME`` and ``FORECAST`` from the override
+    # set. Both can be answered from external knowledge
+    # without the user's business data; the user's profile
+    # only personalises the answer.
+    _REQUIRES_BUSINESS = {
+        "BUSINESS_FACT", "CALCULATION", "RECOMMENDATION",
+        "SCENARIO", "COMPARISON",
+    }
+    if "EXTERNAL_INFORMATION" not in capability and any(
+        c in _REQUIRES_BUSINESS for c in capability
+    ):
+        return "required"
+
+    # Mixed → OPTIONAL (general knowledge can answer, business
+    # data would refine).
+    if "MIXED" in capability:
+        return "optional"
+
+    # External industry / best-practice phrasing → OPTIONAL.
+    if "EXTERNAL_INFORMATION" in capability:
+        return "optional"
+
+    # Purely educational OR explicitly general-knowledge →
+    # NONE.
+    if is_purely_educational or "GENERAL_KNOWLEDGE" in capability:
+        return "none"
+
+    return "none"
+
+
+# --------------------------------------------------------------------------- #
+# SPRINT AI-12 — Universal Reasoning Layer derivation.
+#
+# Six new fields on ``QuestionUnderstanding`` (plus answer_mode +
+# expected_output_sections). All derived deterministically from the
+# existing ``capability`` tuple (AI-11) plus the same lowercase prompt
+# string + topic the rest of the module already uses. No new keyword
+# scan of its own beyond a thin capability → tool-table lookup.
+# --------------------------------------------------------------------------- #
+
+
+# Capability → primary tools table. Drives ``required_tools`` and
+# (indirectly, via ``EvidenceRequirementPlanner``) the
+# ``required_evidence_types`` field. Matches the plan's §3 matrix.
+_CAPABILITY_TO_PRIMARY_TOOLS: dict[str, tuple[str, ...]] = {
+    "GENERAL_KNOWLEDGE": ("knowledge_retrieval",),
+    "BUSINESS_ANALYSIS": ("health_score", "kpi", "insights"),
+    "FINANCIAL": ("finance", "kpi"),
+    "OPERATIONAL": ("health_score", "risk", "readiness"),
+    "RISK": ("risk", "insights"),
+    "SCENARIO": ("predictive_sprint14", "scenario"),
+    "FORECAST": ("predictive_sprint14",),
+    "CALCULATION": ("finance", "kpi"),
+    "COMPARISON": ("compare_recommendations", "benchmark"),
+    "RECOMMENDATION": ("recommendation", "insights"),
+    "GOVERNMENT_SCHEME": ("schemes_sprint16", "funding"),
+    "EXPORT": ("schemes_sprint16", "compliance", "knowledge_retrieval"),
+    "ROADMAP": ("roadmap", "recommendation"),
+    "EXTERNAL_INFORMATION": ("knowledge_retrieval", "compliance"),
+    "BUSINESS_FACT": ("kpi",),
+    "MIXED": (),
+    "UNKNOWN": (),
+}
+
+
+# Sprint AI-20 — tool-minimality closure.
+# Per-capability list of tools that must NEVER be in
+# ``required_tools`` for that capability. The QU builder
+# filters these out of ``required_tools`` before the
+# planner emits the ToolPlan. Examples from the brief:
+#   * GENERAL_KNOWLEDGE prompts must not call finance,
+#     schemes, or forecast tools.
+#   * GOVERNMENT_SCHEME prompts must not call forecast
+#     or finance tools.
+#   * SCENARIO prompts must not call scheme/roadmap
+#     tools.
+# An empty tuple means "no exclusions beyond the
+# primary-tools table". Closed allow-list — adding a new
+# capability without an explicit exclusions tuple
+# defaults to safe behaviour (no exclusions applied).
+_CAPABILITY_TO_EXCLUDED_TOOLS: dict[str, tuple[str, ...]] = {
+    "GENERAL_KNOWLEDGE": (
+        "finance",
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+        "recommendation",
+        "risk",
+        "benchmark",
+        "compare_recommendations",
+        "compliance",
+    ),
+    "BUSINESS_FACT": (
+        "predictive_sprint14",
+        "scenario",
+        "schemes_sprint16",
+        "funding",
+    ),
+    "BUSINESS_ANALYSIS": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "FINANCIAL": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "CALCULATION": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "SCENARIO": (
+        "schemes_sprint16",
+        "funding",
+        "compliance",
+        "roadmap",
+        "benchmark",
+    ),
+    "FORECAST": (
+        "schemes_sprint16",
+        "funding",
+        "compliance",
+        "roadmap",
+    ),
+    "RECOMMENDATION": (
+        "predictive_sprint14",
+        "scenario",
+        "schemes_sprint16",
+        "funding",
+    ),
+    "RISK": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+    ),
+    "OPERATIONAL": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "COMPARISON": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "GOVERNMENT_SCHEME": (
+        "predictive_sprint14",
+        "scenario",
+        "finance",
+        "benchmark",
+        "compare_recommendations",
+    ),
+    "EXPORT": (
+        "predictive_sprint14",
+        "scenario",
+        "finance",
+    ),
+    "ROADMAP": (
+        "schemes_sprint16",
+        "funding",
+        "predictive_sprint14",
+        "scenario",
+    ),
+    "EXTERNAL_INFORMATION": (
+        "finance",
+        "predictive_sprint14",
+        "scenario",
+        "schemes_sprint16",
+        "funding",
+    ),
+    # MIXED, UNKNOWN — no exclusions; the union of
+    # per-sub-question required_tools is the answer.
+    "MIXED": (),
+    "UNKNOWN": (),
+}
+
+
+# Sprint AI-20 — tools that improve the answer but are
+# not strictly required. The QU does NOT include these
+# in ``required_tools``; the planner surfaces them as
+# ``ToolPlan.optional`` when the upstream
+# ``applicable_deterministic_services`` carries them.
+_CAPABILITY_TO_OPTIONAL_TOOLS: dict[str, tuple[str, ...]] = {
+    "GENERAL_KNOWLEDGE": ("insights",),
+    "BUSINESS_FACT": ("health_score",),
+    "BUSINESS_ANALYSIS": ("benchmark",),
+    "FINANCIAL": ("insights",),
+    "CALCULATION": ("health_score",),
+    "RECOMMENDATION": ("health_score",),
+    "RISK": ("health_score",),
+    "OPERATIONAL": ("benchmark",),
+    "GOVERNMENT_SCHEME": ("compliance",),
+    "EXPORT": ("benchmark",),
+    "ROADMAP": ("benchmark",),
+    "EXTERNAL_INFORMATION": (),
+    "SCENARIO": ("finance",),
+    "FORECAST": ("finance",),
+    "COMPARISON": ("recommendation",),
+    "MIXED": (),
+    "UNKNOWN": (),
+}
+
+# Capability → expected output sections. Drives the answer-shell
+# decision (mirrored by ``AdaptiveAnswer.mode_used``). The composer
+# falls back to ``"expanded"`` for any unmapped capability.
+_CAPABILITY_TO_OUTPUT_SECTIONS: dict[str, tuple[str, ...]] = {
+    "GENERAL_KNOWLEDGE": ("definition", "why_it_matters", "example", "business_relevance"),
+    "BUSINESS_ANALYSIS": ("executive_summary", "key_findings", "evidence", "analysis", "recommendations", "risks", "next_actions"),
+    "CALCULATION": ("result", "inputs", "calculation", "interpretation", "assumptions"),
+    "SCENARIO": ("baseline", "changes", "estimated_effects", "risks", "unknowns"),
+    "COMPARISON": ("option_a", "option_b", "comparison", "best_fit", "trade_offs"),
+    "GOVERNMENT_SCHEME": ("scheme", "eligibility", "match_reason", "benefits", "evidence", "application", "unknowns"),
+    "EXTERNAL_INFORMATION": ("answer", "source_context", "business_relevance", "what_is_known", "what_requires_verification"),
+}
+
+
+def _detect_reasoning_metadata(
+    *,
+    lower: str,
+    topic: str,
+    is_business_specific: bool,
+    is_purely_educational: bool,
+    complexity: str,
+    capability: tuple[str, ...],
+) -> dict[str, Any]:
+    """Return the AI-12 additive fields as a dict.
+
+    Returns:
+        A dict with keys:
+          ``required_evidence_types`` (tuple[str, ...]),
+          ``required_tools`` (tuple[str, ...]),
+          ``requires_calculation`` (bool),
+          ``requires_scenario_analysis`` (bool),
+          ``requires_forecast`` (bool),
+          ``requires_external_information`` (bool),
+          ``answer_mode`` (str),
+          ``expected_output_sections`` (tuple[str, ...]).
+
+    Algorithm:
+      1. Aggregate primary tools across the multi-label capability
+         tuple (de-duped, order-preserved).
+      2. Aggregate required evidence types across the
+         capability tuple using the same table the
+         ``EvidenceRequirementPlanner`` uses — keeps QU and
+         the planner in lockstep.
+      3. Set ``requires_*`` flags from capability membership.
+      4. Pick an ``answer_mode`` from a deterministic priority
+         list — the FIRST capability that maps to a non-empty
+         tool table wins. ``MIXED`` is the fallback when 2+
+         capabilities cross answer-shape boundaries.
+      5. ``expected_output_sections`` keys off the picked
+         ``answer_mode``.
+
+    Side-effect free. Same inputs ⇒ same output.
+    """
+    # 1. aggregate primary tools.
+    seen_tools: set[str] = set()
+    ordered_tools: list[str] = []
+    # Sprint AI-20 — tool-minimality closure. Per-capability
+    # exclusions are scoped to the primary tools each
+    # capability contributes (not the union) so a
+    # multi-label capability tuple like
+    # ``(GOVERNMENT_SCHEME, EXTERNAL_INFORMATION)`` keeps
+    # ``schemes_sprint16`` from GOVERNMENT_SCHEME without
+    # it being filtered out by EXTERNAL_INFORMATION's
+    # cross-capability exclusion list.
+    for cap in capability:
+        excluded = set(
+            _CAPABILITY_TO_EXCLUDED_TOOLS.get(cap, ())
+        )
+        for tool in _CAPABILITY_TO_PRIMARY_TOOLS.get(cap, ()):
+            if tool in excluded:
+                continue
+            if tool not in seen_tools:
+                seen_tools.add(tool)
+                ordered_tools.append(tool)
+    required_tools = tuple(ordered_tools)
+
+    # 2. aggregate required evidence types. Mirrors
+    # ``EvidenceRequirementPlanner._CAPABILITY_TO_EVIDENCE``
+    # so QU + planner stay in lockstep; the planner is still
+    # the source of truth for the orchestrator step.
+    seen_ev: set[str] = set()
+    ordered_ev: list[str] = []
+    for cap in capability:
+        req_ev, _opt_ev = _QU_CAPABILITY_TO_EVIDENCE.get(cap, ((), ()))
+        for ev in req_ev:
+            if ev not in seen_ev:
+                seen_ev.add(ev)
+                ordered_ev.append(ev)
+    # Always include ``"profile"`` for business-specific prompts.
+    if is_business_specific and "profile" not in seen_ev:
+        ordered_ev.insert(0, "profile")
+    required_evidence_types = tuple(ordered_ev)
+
+    # 3. requires_* booleans.
+    requires_calculation = any(
+        c in capability for c in ("CALCULATION", "FINANCIAL")
+    )
+    requires_scenario_analysis = (
+        complexity == "scenario" or "SCENARIO" in capability
+    )
+    requires_forecast = "FORECAST" in capability
+    requires_external_information = any(
+        c in capability for c in ("EXTERNAL_INFORMATION", "GOVERNMENT_SCHEME")
+    )
+
+    # 4. answer_mode priority. The first capability mapped to a
+    # non-empty sections table wins. When 2+ capabilities cross
+    # the answer-shape boundary the brief asks for ``mixed``.
+    _CAP_TO_SHAPE: dict[str, str] = {
+        "GENERAL_KNOWLEDGE": "general_knowledge",
+        "BUSINESS_ANALYSIS": "business_analysis",
+        "BUSINESS_FACT": "business_analysis",
+        "CALCULATION": "calculation",
+        "FINANCIAL": "calculation",
+        "SCENARIO": "scenario",
+        "FORECAST": "scenario",
+        "COMPARISON": "comparison",
+        "GOVERNMENT_SCHEME": "scheme",
+        "EXPORT": "scheme",
+        "EXTERNAL_INFORMATION": "external",
+        "OPERATIONAL": "business_analysis",
+        "RISK": "business_analysis",
+        "RECOMMENDATION": "business_analysis",
+        "ROADMAP": "business_analysis",
+    }
+    shapes_hit: list[str] = []
+    for cap in capability:
+        shape = _CAP_TO_SHAPE.get(cap)
+        if shape and shape not in shapes_hit:
+            shapes_hit.append(shape)
+    if len(shapes_hit) > 1:
+        answer_mode = "mixed"
+    elif shapes_hit:
+        answer_mode = shapes_hit[0]
+    elif is_purely_educational and not is_business_specific:
+        answer_mode = "general_knowledge"
+    else:
+        # No capability mapped — fall back to business_analysis
+        # when business-specific (advisory default), else
+        # general_knowledge.
+        answer_mode = "business_analysis" if is_business_specific else "general_knowledge"
+
+    # 5. expected_output_sections — keyed off the picked answer_mode.
+    expected_output_sections = _CAPABILITY_TO_OUTPUT_SECTIONS.get(
+        _pick_capability_for_shape(answer_mode, capability),
+        (),
+    )
+
+    return {
+        "required_tools": required_tools,
+        "required_evidence_types": required_evidence_types,
+        "requires_calculation": requires_calculation,
+        "requires_scenario_analysis": requires_scenario_analysis,
+        "requires_forecast": requires_forecast,
+        "requires_external_information": requires_external_information,
+        "answer_mode": answer_mode,
+        "expected_output_sections": expected_output_sections,
+    }
+
+
+# Mirror of ``EvidenceRequirementPlanner._CAPABILITY_TO_EVIDENCE``.
+# Kept in lockstep so the QU can fill ``required_evidence_types``
+# without importing the planner (avoids the cycle through
+# ``reasoning/__init__.py``). The planner is still the source of
+# truth at the orchestrator step — this dict is a mirror.
+_QU_CAPABILITY_TO_EVIDENCE: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "GENERAL_KNOWLEDGE": (("document", "knowledge_base"), ()),
+    "BUSINESS_ANALYSIS": (("profile", "analytics", "kpi_history"), ("score_history", "rule_history")),
+    "BUSINESS_FACT": (("profile",), ("analytics",)),
+    "CALCULATION": (("profile", "transaction", "rate_card"), ("forecast_history",)),
+    "FINANCIAL": (("profile", "transaction"), ("forecast_history",)),
+    "OPERATIONAL": (("profile", "process_metrics"), ("team_metrics",)),
+    "RISK": (("profile", "risk_register"), ("scenario_history",)),
+    "SCENARIO": (("profile", "historical_assumption"), ("scenario_history",)),
+    "FORECAST": (("profile", "forecast_history"), ("external_market",)),
+    "COMPARISON": (("profile", "product", "scheme"), ("industry_benchmark",)),
+    "RECOMMENDATION": (("profile", "rules"), ("recommendation_history",)),
+    "GOVERNMENT_SCHEME": (("scheme", "profile", "funding"), ("application_history",)),
+    "EXPORT": (("scheme", "certification"), ("market_intel",)),
+    "ROADMAP": (("profile", "recommendation"), ("roadmap_history",)),
+    "EXTERNAL_INFORMATION": (("document", "regulatory", "external"), ()),
+    "MIXED": (("profile",), ("document",)),
+    "UNKNOWN": (("profile",), ()),
+}
+
+
+def _pick_capability_for_shape(
+    answer_mode: str, capability: tuple[str, ...]
+) -> str:
+    """Reverse-map an answer_mode back to the capability token that
+    drove it. Returns the first capability in the tuple that
+    maps to the shape (the answer-mode logic always walks the
+    tuple in priority order, so the first matching entry is the
+    authoritative one). Returns ``""`` when no capability can
+    claim the shape.
+    """
+    reverse = {
+        "general_knowledge": ("GENERAL_KNOWLEDGE",),
+        "business_analysis": (
+            "BUSINESS_ANALYSIS", "BUSINESS_FACT", "OPERATIONAL",
+            "RISK", "RECOMMENDATION", "ROADMAP",
+        ),
+        "calculation": ("CALCULATION", "FINANCIAL"),
+        "scenario": ("SCENARIO", "FORECAST"),
+        "comparison": ("COMPARISON",),
+        "scheme": ("GOVERNMENT_SCHEME", "EXPORT"),
+        "external": ("EXTERNAL_INFORMATION",),
+    }
+    for target in reverse.get(answer_mode, ()):
+        if target in capability:
+            return target
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
 
@@ -643,6 +1428,37 @@ def understand_question(
     sentiment = _detect_sentiment(lower)
     user_intent = _build_user_intent_string(topic, lower)
 
+    # SPRINT AI-11 — capability + business_dependency derivation.
+    # Both fields are derived deterministically from the existing
+    # heuristics; no new keyword scans, no LLM access.
+    capability = _detect_capability(
+        lower=lower,
+        topic=topic,
+        is_business_specific=is_biz,
+        is_purely_educational=is_edu,
+        complexity=complexity,
+    )
+    business_dependency = _detect_business_dependency(
+        lower=lower,
+        is_business_specific=is_biz,
+        is_purely_educational=is_edu,
+        capability=capability,
+    )
+    # SPRINT AI-12 — derive the 8 universal-reasoning fields from
+    # the AI-11 capability tuple + topic + complexity. Pure
+    # function — same inputs ⇒ same output. ``required_evidence_types``
+    # stays empty here; the orchestrator's EvidenceRequirementPlanner
+    # populates it from the capability tuple so the planner has a
+    # single source of truth.
+    reasoning_meta = _detect_reasoning_metadata(
+        lower=lower,
+        topic=topic,
+        is_business_specific=is_biz,
+        is_purely_educational=is_edu,
+        complexity=complexity,
+        capability=capability,
+    )
+
     # The existing intent classifier → tuple of intents in
     # priority order. We always emit at least one (the GENERAL
     # fallback). For prompts that match multiple intents, we
@@ -663,6 +1479,19 @@ def understand_question(
         relevant_existing_intents=relevant,
         sentiment=sentiment,
         complexity=complexity,
+        capability=capability,
+        business_dependency=business_dependency,
+        # SPRINT AI-12 — pass through the universal-reasoning
+        # fields. All default-safe so legacy callers that only
+        # pass the AI-11 kwargs keep working unchanged.
+        required_evidence_types=reasoning_meta["required_evidence_types"],
+        required_tools=reasoning_meta["required_tools"],
+        requires_calculation=reasoning_meta["requires_calculation"],
+        requires_scenario_analysis=reasoning_meta["requires_scenario_analysis"],
+        requires_forecast=reasoning_meta["requires_forecast"],
+        requires_external_information=reasoning_meta["requires_external_information"],
+        answer_mode=reasoning_meta["answer_mode"],
+        expected_output_sections=reasoning_meta["expected_output_sections"],
     )
 
 

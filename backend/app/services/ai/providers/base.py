@@ -417,6 +417,18 @@ class AssistantContext:
     context_manifest: BusinessContextManifest | None = None
     knowledge_graph: Any | None = None
 
+    # SPRINT AI-7 — Missing-data intelligence. Three financial-shape
+    # fields the AI-7 detector reads to surface the structured
+    # ``MissingDataObject`` rows for hire-affordability and similar
+    # prompts. All default to 0 / 0.0 (the brief mandates 0 as the
+    # missing sentinel so the dataclass stays frozen + zero-cost for
+    # legacy callers). The ``AssistantContextBuilder`` populates
+    # them when the upstream payload carries them; absence is
+    # exactly the signal the detector relies on.
+    monthly_payroll_cost_inr: int = 0
+    monthly_operating_cash_flow_inr: int = 0
+    operating_margin_pct: float = 0.0
+
     # Sidecar — upstream generated_at fields, echoed.
     twin_generated_at: str | None = None
     recommendations_generated_at: str | None = None
@@ -636,6 +648,229 @@ class GenerationMeta:
     # to ``chat_message.scenario_analysis``.
     scenario_analysis: dict | None = None
 
+    # SPRINT AI-6 — Trust-first visual UI. Server-extracted first
+    # 1-3 sentences of the assistant's prose. The frontend renders
+    # this as the "Direct Answer" 10-second-read header; legacy rows
+    # that pre-date AI-6 keep ``direct_answer=None`` and the frontend
+    # projector falls back to ``consultant.body`` / ``content``.
+    # Field is appended at the END with a safe default so legacy
+    # ``GenerationMeta(**kwargs)`` calls keep working.
+    direct_answer: str | None = None
+
+    # SPRINT AI-7 — Missing-data intelligence. Structured list of
+    # ``MissingDataObject`` dicts the proactive detector (step 3.7)
+    # surfaces BEFORE the provider call, enriched by the LLM prose
+    # pass after the provider returns. Each item has the shape
+    # ``{"field", "importance", "reason", "affects", "suggested_source"}``.
+    # Empty tuple for non-proactive prompts (legacy rows keep
+    # ``missing_data=()``). The frontend ``MissingInfoCard`` renders
+    # the 4-section "What I can tell / What I am missing / Why it
+    # matters / Next step" layout when the tuple is non-empty;
+    # otherwise the AI-6 prose fallback path renders unchanged.
+    missing_data: tuple[dict, ...] = field(default_factory=tuple)
+
+    # SPRINT AI-8 — Controlled Business Tool Router. The validated,
+    # sanitised, evidence-stamped results of the (optional) 2nd
+    # tool-call loop. Each item is the JSON-serialised shape of
+    # :class:`LLMToolResult`:
+    # ``{"tool", "status", "evidence_ids", "payload",
+    #   "duration_ms", "error"}``. Empty when the LLM did NOT
+    # request any tools, or when the controlled router rejected
+    # every request. The wire mirrors this field on
+    # ``chat_message.llm_tool_results``; the frontend
+    # ``ReasoningTrace`` renders a "used tools" pill row when
+    # the tuple is non-empty. Field is appended at the END so
+    # legacy ``GenerationMeta(**kwargs)`` calls keep working.
+    llm_tool_results: tuple[dict, ...] = field(default_factory=tuple)
+
+    # SPRINT AI-10 — Explain My Answer. Per-recommendation
+    # decision traces keyed by ``recommendation_id``. Each value
+    # is the JSON-serialisable shape of
+    # :class:`app.services.ai.trace.decision_trace.DecisionTrace`
+    # (six sections: evidence, calculations, decision_factors,
+    # assumptions, uncertainty, alternatives; plus
+    # confidence + confidence_label). ``None`` for legacy rows
+    # that pre-date AI-10; the deterministic fallback ALWAYS
+    # populates this dict for every recommendation in the turn.
+    # The wire mirrors the field on ``chat_message.explanation``
+    # so the frontend ``ExplanationPanel`` can render without
+    # parsing the structured ``generation`` envelope.
+    explanation: dict | None = None
+
+    # SPRINT AI-11 — Universal Business-Aware Assistant hardening.
+    # The capability tuple is the AI-1+ ``QuestionUnderstanding``'s
+    # multi-label classification of what capabilities the prompt
+    # requires (general knowledge / business fact / calculation /
+    # scenario / risk / etc.). The dependency literal is one of
+    # ``"none"``, ``"optional"``, ``"required"``. Both default to
+    # safe empty / ``"none"`` so every pre-AI-11 row deserialises
+    # unchanged.
+    capability: tuple[str, ...] = ()
+    business_dependency: str = "none"
+
+    # SPRINT AI-13 — Production Orchestration Cutover. Three
+    # additive fields for per-tool observability + partial-
+    # failure handling. All default-safe so legacy rows that
+    # pre-date AI-13 round-trip unchanged.
+    #   * ``tool_execution_traces`` — one
+    #     :class:`ToolExecutionTrace.to_dict()` per executed
+    #     tool. Empty tuple for legacy rows or kill-switch
+    #     disabled paths.
+    #   * ``partial_failure_disclosure`` — the one-line
+    #     sentence the partial-failure handler built (None
+    #     when every tool succeeded).
+    #   * ``confidence_penalty`` — the integer 0..40 penalty
+    #     the partial-failure handler computed. 0 when every
+    #     tool succeeded.
+    tool_execution_traces: tuple[dict, ...] = field(default_factory=tuple)
+    partial_failure_disclosure: str | None = None
+    confidence_penalty: int = 0
+
+    # SPRINT AI-12 — Universal Reasoning Layer mirrors (kept on
+    # the dataclass so the deterministic-fallback short-circuit
+    # path can stamp them without an LLM call). All default-
+    # safe; legacy rows deserialize as ``None`` / empty.
+    #   * ``tool_plan`` — the AI-12 :class:`ToolPlan.to_dict()`
+    #     payload (required/optional/parallelizable/sequential +
+    #     rationale). None when no plan was produced.
+    #   * ``structured_tool_envelopes`` — list of
+    #     :class:`StructuredToolEnvelope.to_dict()` dicts, one
+    #     per executed tool. Empty list when the dispatcher ran
+    #     nothing or the kill-switch is off.
+    #   * ``evidence_requirements`` — :class:`EvidenceRequirements
+    #     .to_dict()` payload; None when the planner did not run.
+    #   * ``contradiction_report`` — :class:`ContradictionReport
+    #     .to_dict()` payload; None when no contradiction was
+    #     detected.
+    #   * ``answer_quality`` — :class:`AnswerQuality.to_dict()`
+    #     payload; None when the validator did not run.
+    #   * ``answer_mode`` — the AI-12 shell literal the composer
+    #     chose (general_knowledge / business_analysis /
+    #     calculation / scenario / comparison / scheme /
+    #     external / mixed). Defaults to "general_knowledge".
+    tool_plan: dict | None = None
+    structured_tool_envelopes: list[dict] = field(default_factory=list)
+    evidence_requirements: dict | None = None
+    contradiction_report: dict | None = None
+    answer_quality: dict | None = None
+    answer_mode: str = "general_knowledge"
+
+    # SPRINT AI-14 — Universal Answer Intelligence + Evidence Graph.
+    # Six additive fields the deterministic-fallback short-circuit
+    # stamps without an LLM call so the wire shape is uniform across
+    # every reply. All six default-safe (None / empty / 0) so
+    # pre-AI-14 rows on the wire deserialize unchanged.
+    #   * ``answer_requirements`` — the ``AnswerRequirements.to_dict()``
+    #     payload describing what the answer needs (16-field
+    #     dataclass). None when the engine did not run.
+    #   * ``evidence_graph`` — the ``AnswerEvidenceGraph.to_dict()``
+    #     payload (nodes / edges / claims / calculations /
+    #     assumptions / external_sources). None when the engine
+    #     did not run.
+    #   * ``calculation_lineage`` — list of ``CalculationNode.to_dict()``
+    #     dicts, one per mintable envelope. Empty list when the
+    #     dispatcher ran no calc-capable tool.
+    #   * ``missing_data_state`` — ``missing_data_state(...)`` dict
+    #     of {known, derived, estimated, unknown} buckets the
+    #     renderer reads for the "What I know / What I am missing"
+    #     disclosure. None when the engine did not run.
+    #   * ``unsupported_claim_count`` — int count of ClaimNodes the
+    #     engine flagged ``validation_status == "unsupported"``.
+    #     Zero on the deterministic-fallback short-circuit (no LLM,
+    #     no unsupported claims — the graph itself is the audit row).
+    #   * ``fabricated_source_count`` — int count of
+    #     ``ExternalSourceNode`` entries whose URL fails the URL
+    #     guard (authority < 0.5 or untrusted domain). Zero by
+    #     default — the AI-14 ``_TRUSTED_URLS`` allow-list is
+    #     deliberately empty in this sprint.
+    answer_requirements: dict | None = None
+    evidence_graph: dict | None = None
+    calculation_lineage: list[dict] = field(default_factory=list)
+    missing_data_state: dict | None = None
+    unsupported_claim_count: int = 0
+    fabricated_source_count: int = 0
+
+    # SPRINT AI-15 — Intelligent Visualization + Trust-First UX.
+    # Three additive fields the renderer + projector read to
+    # surface charts, the low-quality warning strip, and the
+    # "Why this answer?" disclosure. All default-safe (empty
+    # list / None) so pre-AI-15 rows on the wire deserialize
+    # unchanged.
+    #   * ``visualization_plans`` — list of
+    #     ``VisualizationPlan.to_dict()`` payloads. Empty when
+    #     the planner emits no plans (the renderer falls back
+    #     to prose).
+    #   * ``quality_warning`` — ``{"needs_warning": bool,
+    #     "warning_message": str}``. Drives the concise
+    #     low-quality warning strip the brief mandates. ``None``
+    #     when the validator did not compute one.
+    #   * ``trust_summary`` — ``build_trust_summary(...)``
+    #     payload with the 5 disclosure sections (evidence,
+    #     calculations, assumptions, uncertainty, alternatives)
+    #     plus tools_used / tool_failures / confidence_change.
+    #     ``None`` when the engine did not compute one.
+    visualization_plans: list[dict] = field(default_factory=list)
+    quality_warning: dict | None = None
+    trust_summary: dict | None = None
+
+    # SPRINT AI-16 — Verified External Knowledge + Freshness
+    # Layer. Five additive fields the renderer + projector read
+    # to surface external-source provenance, freshness, and the
+    # conservative scheme / mixed-question envelopes. All five
+    # default to safe (empty tuple / None / 0) so pre-AI-16
+    # rows on the wire deserialize unchanged.
+    #   * ``external_claims`` — list of
+    #     :class:`ClassifiedClaim.to_dict()` payloads the engine
+    #     produced. Empty when no external claims were used.
+    #   * ``freshness_warnings`` — list of
+    #     :class:`ExternalSource.to_dict()` payloads for sources
+    #     whose freshness is AGING / STALE / UNKNOWN. Empty when
+    #     every source is FRESH.
+    #   * ``scheme_card`` — :class:`SchemeAnswerCard.to_dict()`
+    #     payload when the engine produced one. None for
+    #     non-scheme prompts.
+    #   * ``external_answer`` — :class:`ExternalAnswerEnvelope
+    #     .to_dict()` payload when the engine produced one
+    #     (concise definition-style reply). None for prompts
+    #     that need the full 10-section consultant format.
+    #   * ``mixed_answer`` — :class:`MixedAnswerBlocks` (as
+    #     dict) when the engine produced one. None when the
+    #     question was not mixed.
+    external_claims: tuple[dict, ...] = field(default_factory=tuple)
+    freshness_warnings: tuple[dict, ...] = field(default_factory=tuple)
+    scheme_card: dict | None = None
+    external_answer: dict | None = None
+    mixed_answer: dict | None = None
+
+    # SPRINT AI-17 — Bounded Quality Repair + Claim Lifecycle.
+    # Eight additive fields the renderer + projector read to
+    # surface the AI-17 closure loop. All default to safe
+    # (empty / None / False) so pre-AI-17 rows on the wire
+    # deserialize unchanged.
+    #   * ``failure_classification`` — one of the 9
+    #     :data:`app.services.ai.knowledge.ai17_quality_failure_classifier.FAILURE_CLASSES`.
+    #     Defaults to ``"none"`` so legacy rows show as clean.
+    #   * ``repair_applied`` — tuple of repair names the
+    #     deterministic repair dispatcher ran. Empty when no
+    #     repair was needed.
+    #   * ``retry_attempted`` — ``True`` when the bounded
+    #     retry gate fired the (single, terminal) retry.
+    #   * ``retry_succeeded`` — outcome of the retry, ``None``
+    #     when retry_attempted is ``False``.
+    #   * ``numeric_corrections`` — list of
+    #     :class:`NumericCorrectionAudit.to_dict()` rows.
+    #   * ``claim_lifecycle`` — :meth:`ClaimLifecycleStore
+    #     .to_dict()` payload from the AI-17 repair pass.
+    #   * ``bounded_repair_version`` — schema version of the
+    #     AI-17 pipeline. Empty when the module did not run.
+    failure_classification: str = "none"
+    repair_applied: tuple[str, ...] = field(default_factory=tuple)
+    retry_attempted: bool = False
+    retry_succeeded: bool | None = None
+    numeric_corrections: tuple[dict, ...] = field(default_factory=tuple)
+    claim_lifecycle: dict | None = None
+    bounded_repair_version: str = ""
+
     @staticmethod
     def empty(
         *,
@@ -672,8 +907,52 @@ class GenerationMeta:
         claim_audit_rejected: bool = False,
         claim_audit_soft_corrections: int = 0,
         scenario_analysis: dict | None = None,
+        direct_answer: str | None = None,
+        missing_data: tuple[dict, ...] = (),
+        llm_tool_results: tuple[dict, ...] = (),
+        explanation: dict | None = None,
+        capability: tuple[str, ...] = (),
+        business_dependency: str = "none",
+        tool_execution_traces: tuple[dict, ...] = (),
+        partial_failure_disclosure: str | None = None,
+        confidence_penalty: int = 0,
+        tool_plan: dict | None = None,
+        structured_tool_envelopes: list[dict] | tuple[dict, ...] = (),
+        evidence_requirements: dict | None = None,
+        contradiction_report: dict | None = None,
+        answer_quality: dict | None = None,
+        answer_mode: str = "general_knowledge",
+        answer_requirements: dict | None = None,
+        evidence_graph: dict | None = None,
+        calculation_lineage: list[dict] | tuple[dict, ...] = (),
+        missing_data_state: dict | None = None,
+        unsupported_claim_count: int = 0,
+        fabricated_source_count: int = 0,
+        visualization_plans: list[dict] | tuple[dict, ...] = (),
+        quality_warning: dict | None = None,
+        trust_summary: dict | None = None,
+        # SPRINT AI-16 — verified external knowledge + freshness.
+        external_claims: tuple[dict, ...] | list[dict] = (),
+        freshness_warnings: tuple[dict, ...] | list[dict] = (),
+        scheme_card: dict | None = None,
+        external_answer: dict | None = None,
+        mixed_answer: dict | None = None,
+        # SPRINT AI-17 — Bounded Quality Repair + Claim Lifecycle.
+        failure_classification: str = "none",
+        repair_applied: tuple[str, ...] | list[str] = (),
+        retry_attempted: bool = False,
+        retry_succeeded: bool | None = None,
+        numeric_corrections: tuple[dict, ...] | list[dict] = (),
+        claim_lifecycle: dict | None = None,
+        bounded_repair_version: str = "",
     ) -> "GenerationMeta":
         """Return a default-valued GenerationMeta."""
+        # SPRINT AI-11 — coerce list→tuple so callers can pass the
+        # wire shape (lists) without violating the frozen-dataclass
+        # contract. Defensive against list-default leakages.
+        capability_tuple: tuple[str, ...] = (
+            tuple(capability) if isinstance(capability, list) else tuple(capability or ())
+        )
         return GenerationMeta(
             provider=provider_used,
             model=model,
@@ -708,6 +987,55 @@ class GenerationMeta:
             claim_audit_rejected=claim_audit_rejected,
             claim_audit_soft_corrections=claim_audit_soft_corrections,
             scenario_analysis=scenario_analysis,
+            direct_answer=direct_answer,
+            missing_data=missing_data,
+            llm_tool_results=llm_tool_results,
+            explanation=explanation,
+            capability=capability_tuple,
+            business_dependency=business_dependency,
+            tool_execution_traces=tuple(
+                tool_execution_traces or ()
+            ),
+            partial_failure_disclosure=partial_failure_disclosure,
+            confidence_penalty=int(confidence_penalty or 0),
+            tool_plan=tool_plan,
+            structured_tool_envelopes=list(
+                structured_tool_envelopes or ()
+            ),
+            evidence_requirements=evidence_requirements,
+            contradiction_report=contradiction_report,
+            answer_quality=answer_quality,
+            answer_mode=answer_mode,
+            answer_requirements=answer_requirements,
+            evidence_graph=evidence_graph,
+            calculation_lineage=list(
+                calculation_lineage or ()
+            ),
+            missing_data_state=missing_data_state,
+            unsupported_claim_count=int(unsupported_claim_count or 0),
+            fabricated_source_count=int(fabricated_source_count or 0),
+            # SPRINT AI-15 — visualization + trust envelope.
+            visualization_plans=list(visualization_plans or ()),
+            quality_warning=quality_warning,
+            trust_summary=trust_summary,
+            # SPRINT AI-16 — verified external knowledge + freshness.
+            external_claims=tuple(external_claims or ()),
+            freshness_warnings=tuple(freshness_warnings or ()),
+            scheme_card=scheme_card,
+            external_answer=external_answer,
+            mixed_answer=mixed_answer,
+            # SPRINT AI-17 — Bounded Quality Repair + Claim Lifecycle.
+            failure_classification=failure_classification,
+            repair_applied=tuple(repair_applied or ()),
+            retry_attempted=bool(retry_attempted),
+            retry_succeeded=(
+                bool(retry_succeeded)
+                if retry_succeeded is not None
+                else None
+            ),
+            numeric_corrections=tuple(numeric_corrections or ()),
+            claim_lifecycle=claim_lifecycle,
+            bounded_repair_version=bounded_repair_version,
         )
 
     def merge(self, **overrides: Any) -> "GenerationMeta":
@@ -740,6 +1068,86 @@ class GenerationMeta:
             kwargs["limitations"] = tuple(kwargs["limitations"])
         if "evidence_references" in kwargs and isinstance(kwargs["evidence_references"], list):
             kwargs["evidence_references"] = tuple(kwargs["evidence_references"])
+        if "missing_data" in kwargs and isinstance(kwargs["missing_data"], list):
+            # AI-7 — wire payloads come back as lists; the dataclass
+            # wants a tuple to preserve the frozen contract.
+            kwargs["missing_data"] = tuple(kwargs["missing_data"])
+        # SPRINT AI-8 — same list→tuple coercion for the new
+        # ``llm_tool_results`` slot, plus ``tool_calls`` (the AI-1
+        # field, kept honest even though it has always been
+        # constructed in-process).
+        if "llm_tool_results" in kwargs and isinstance(kwargs["llm_tool_results"], list):
+            kwargs["llm_tool_results"] = tuple(kwargs["llm_tool_results"])
+        if "tool_calls" in kwargs and isinstance(kwargs["tool_calls"], list):
+            kwargs["tool_calls"] = tuple(kwargs["tool_calls"])
+        # SPRINT AI-11 — same list→tuple coercion for the
+        # ``capability`` tuple (wire payloads serialise as JSON
+        # arrays; the dataclass wants a tuple).
+        if "capability" in kwargs and isinstance(kwargs["capability"], list):
+            kwargs["capability"] = tuple(kwargs["capability"])
+        # SPRINT AI-13 — same list→tuple coercion for the
+        # ``tool_execution_traces`` wire field.
+        if "tool_execution_traces" in kwargs and isinstance(
+            kwargs["tool_execution_traces"], list
+        ):
+            kwargs["tool_execution_traces"] = tuple(
+                kwargs["tool_execution_traces"]
+            )
+        # SPRINT AI-12 — list coercion for ``structured_tool_envelopes``
+        # (always a list of dicts on the wire; the dataclass keeps a
+        # list to remain JSON-friendly for the frontend).
+        if "structured_tool_envelopes" in kwargs and isinstance(
+            kwargs["structured_tool_envelopes"], tuple
+        ):
+            kwargs["structured_tool_envelopes"] = list(
+                kwargs["structured_tool_envelopes"]
+            )
+        # SPRINT AI-14 — list coercion for ``calculation_lineage``
+        # (always a list of dicts on the wire; the dataclass keeps a
+        # list to remain JSON-friendly for the frontend).
+        if "calculation_lineage" in kwargs and isinstance(
+            kwargs["calculation_lineage"], tuple
+        ):
+            kwargs["calculation_lineage"] = list(
+                kwargs["calculation_lineage"]
+            )
+        # SPRINT AI-14 — int coercion for the two counter fields so
+        # the wire payload (JSON numbers that may arrive as
+        # floats) does not trip the dataclass constructor.
+        if "unsupported_claim_count" in kwargs:
+            try:
+                kwargs["unsupported_claim_count"] = int(
+                    kwargs["unsupported_claim_count"] or 0
+                )
+            except (TypeError, ValueError):
+                kwargs["unsupported_claim_count"] = 0
+        if "fabricated_source_count" in kwargs:
+            try:
+                kwargs["fabricated_source_count"] = int(
+                    kwargs["fabricated_source_count"] or 0
+                )
+            except (TypeError, ValueError):
+                kwargs["fabricated_source_count"] = 0
+        # SPRINT AI-15 — list coercion for ``visualization_plans``
+        # (always a list of dicts on the wire; the dataclass keeps
+        # a list to remain JSON-friendly for the frontend).
+        if "visualization_plans" in kwargs and isinstance(
+            kwargs["visualization_plans"], tuple
+        ):
+            kwargs["visualization_plans"] = list(
+                kwargs["visualization_plans"]
+            )
+        # SPRINT AI-16 — list→tuple coercion for the new
+        # external_claims + freshness_warnings fields (the
+        # dataclass keeps tuples; the wire shape is a list).
+        if "external_claims" in kwargs and isinstance(
+            kwargs["external_claims"], list
+        ):
+            kwargs["external_claims"] = tuple(kwargs["external_claims"])
+        if "freshness_warnings" in kwargs and isinstance(
+            kwargs["freshness_warnings"], list
+        ):
+            kwargs["freshness_warnings"] = tuple(kwargs["freshness_warnings"])
         return cls(**kwargs)
 
 

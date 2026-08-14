@@ -4,7 +4,7 @@
 **HEAD at run time:** `4f72a3b0475dcd89d15ae25cef6f918b2dd8474e`
 **Date:** 2026-08-05
 **Runner:** Playwright 1.x via `@playwright/test` against a locally-running
-stack (`backend` on `:8001`, `frontend` on `:3000`) seeded with the Acme
+stack (`backend` on `:8090`, `frontend` on `:3000`) seeded with the Acme
 Textiles demo profile (`acme.textiles@example.com` / `AcmeDemoPass1`).
 
 This file is the honest pass/fail record. It is intentionally split between

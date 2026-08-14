@@ -74,10 +74,49 @@ from app.services.ai.providers.base import (
 )
 from app.services.ai.providers.context_builder import AssistantContextBuilder
 from app.services.ai.providers.factory import ProviderFactory
+from app.services.ai.providers.intent_router import (
+    QuestionIntent,
+    classify_intent,
+)
 from app.services.ai.providers.ollama import OllamaProvider
 from app.services.ai.providers.service import AssistantProviderService
 from app.services.ai.simulation.analysis import ScenarioAnalyzer
 from app.services.knowledge_retrieval.service import KnowledgeRetrievalService
+
+# SPRINT AI-7 — missing-data intelligence. The detector runs
+# BEFORE the provider call (step 3.7) and the enrichment pass
+# runs AFTER (step 5.8). The wire mirror in ``_message_payload``
+# carries the resulting tuple to the frontend ``MissingInfoCard``.
+from app.services.ai.missing_data import (
+    MissingDataObject,
+    detect_missing_data,
+    enrich_missing_data_from_prose,
+    to_payload as missing_data_to_payload,
+)
+
+
+# SPRINT AI-12 — Universal Reasoning Layer. Three new
+# deterministic gates the orchestrator runs between the
+# question understanding and the LLM call (step 3.9) and
+# between the tool dispatch and the LLM call (step 4.5)
+# and after the LLM call (step 5.5b). All three are
+# pure-function over ``context`` + ``question_understanding``
+# + the dispatcher outcome — no LLM access, no I/O.
+from app.services.ai.reasoning.answer_quality_validator import (
+    AnswerQualityValidator,
+)
+from app.services.ai.reasoning.contradiction_detector import (
+    CrossSourceContradictionDetector,
+)
+from app.services.ai.reasoning.evidence_requirements import (
+    plan as plan_evidence_requirements,
+)
+from app.services.ai.reasoning.minimal_slice import select_minimal_slice
+from app.services.ai.reasoning.question_understanding import understand_question
+from app.services.ai.reasoning.tool_selector import (
+    ToolDispatcher,
+    ToolPlan,
+)
 
 
 # Default number of recent turns replayed into the
@@ -221,6 +260,37 @@ class ConversationService:
             context=context, prompt=content
         )
 
+        # 3.7. Sprint AI-7 — Missing Data Intelligence. Run the
+        #      proactive missing-data detector BEFORE the
+        #      provider call so the structured rows ride the
+        #      GenerationMeta to the wire. The brief is explicit
+        #      the detection must be proactive — the assistant
+        #      must surface "What I am missing" BEFORE it
+        #      invents an answer. The detector is a pure
+        #      function over ``context`` + the classified
+        #      ``intent``; it never raises.
+        try:
+            detected_intent = classify_intent(content)
+        except Exception:  # pragma: no cover — defensive
+            detected_intent = QuestionIntent.GENERAL
+        try:
+            proactive_rows = detect_missing_data(context, detected_intent)
+        except Exception:  # pragma: no cover — defensive
+            proactive_rows = ()
+
+        # 3.9. SPRINT AI-12 — Evidence Requirement Planner.
+        #      Decide what evidence the question demands BEFORE
+        #      any retrieval happens. The plan is stamped onto
+        #      ``GenerationMeta.evidence_requirements`` for the
+        #      audit trail; the prompt builder also reads it.
+        #      The function is pure (no I/O, no LLM access) and
+        #      never raises.
+        try:
+            qu = understand_question(content, context)
+            evidence_requirements = plan_evidence_requirements(qu)
+        except Exception:  # pragma: no cover — defensive
+            evidence_requirements = None
+
         # 4. Sprint 7 Part 4 — retrieve, rank, build
         #    citations. Bind Owner_id to the assistant's
         #    context shape so the per-business boost fires
@@ -246,6 +316,15 @@ class ConversationService:
             mode=mode,
         )
 
+        # SPRINT AI-12 — stamp the step-3.9 evidence
+        # requirements onto the GenerationMeta now that it
+        # exists. ``evidence_requirements`` may be ``None``
+        # when the planner raised (the helper no-ops).
+        self._stamp_evidence_requirements(
+            assistant_resp=assistant_resp,
+            evidence_requirements=evidence_requirements,
+        )
+
         # 5.5. Sprint AI-5 — stamp the scenario envelope onto
         #      the provider's GenerationMeta (or create one when
         #      the legacy mock-provider path returned None).
@@ -257,6 +336,111 @@ class ConversationService:
             self._stamp_scenario_analysis(
                 assistant_resp=assistant_resp, envelope=scenario_envelope
             )
+
+        # 5.7. Sprint AI-6 — Trust-first visual UI. Stamp the
+        #      "Direct Answer" 1-3 sentence extraction onto the
+        #      GenerationMeta so the frontend can render the
+        #      10-second-read header. The extraction is a pure
+        #      function over ``assistant_resp.body``; it never
+        #      raises. When the body is empty / non-string /
+        #      sentence-less, the function returns None and the
+        #      wire mirror is also None (the frontend projector
+        #      falls back to ``consultant.body`` / ``content``).
+        direct_answer = _extract_direct_answer(
+            getattr(assistant_resp, "body", None)
+        )
+        if direct_answer is not None:
+            self._stamp_direct_answer(
+                assistant_resp=assistant_resp, direct_answer=direct_answer
+            )
+
+        # 5.8. Sprint AI-7 — Missing Data Intelligence. Enrich
+        #      the proactive rows with anything the LLM prose
+        #      surfaced (reactive harvest), then stamp the
+        #      combined tuple onto the GenerationMeta. The
+        #      enrichment is a pure regex-based scan; it never
+        #      raises and dedupes against the proactive list.
+        #      The deterministic fallback keeps only the
+        #      proactive list (the LLM wasn't called).
+        if proactive_rows:
+            try:
+                prose = getattr(assistant_resp, "body", None) or ""
+                enriched_rows = enrich_missing_data_from_prose(
+                    prose, proactive_rows
+                )
+            except Exception:  # pragma: no cover — defensive
+                enriched_rows = proactive_rows
+            self._stamp_missing_data(
+                assistant_resp=assistant_resp,
+                missing_data=enriched_rows,
+            )
+
+        # SPRINT AI-8 — step 5.10 — stamp the validated
+        # tool-loop results (if any) onto ``GenerationMeta``.
+        # The router already sanitised each entry through
+        # ``strip_leaked_secrets`` (no leaked secrets survive),
+        # so the stamper is just a verbatim copy. Empty tuple
+        # when no tool calls were requested (the legacy / non-
+        # router-wired paths, plus any future flow that
+        # disables AI-8).
+        try:
+            existing_results = tuple(
+                getattr(
+                    getattr(assistant_resp, "generation", None),
+                    "llm_tool_results",
+                    (),
+                )
+                or ()
+            )
+            self._stamp_llm_tool_results(
+                assistant_resp=assistant_resp,
+                llm_tool_results=existing_results,
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        # SPRINT AI-10 — step 5.11 — Explain My Answer. Build
+        #      a DecisionTrace for every recommendation in the
+        #      turn and stamp the dict on ``GenerationMeta.explanation``.
+        #      The builder is a pure function over the
+        #      ``Recommendation`` payload + ``EvidenceRegistry``;
+        #      no LLM is involved. When the builder raises or the
+        #      upstream ``Recommendation`` list is empty, the trace
+        #      is silently dropped (the panel hides itself). Never
+        #      raises — a failure here would crash the chat
+        #      endpoint for an audit-only field.
+        try:
+            # The EvidenceRegistry isn't passed through to the
+            # chat service today — the service layer doesn't
+            # expose it. The trace builder degrades gracefully
+            # when ``registry`` is None (the Evidence section
+            # becomes empty; Calculations, Decision factors,
+            # Assumptions, Uncertainty still populate from the
+            # rec payload). A future sprint that threads the
+            # registry through can pass it here without changing
+            # the trace dataclass shape.
+            self._stamp_explanation(
+                assistant_resp=assistant_resp,
+                context_snapshot=context,
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        # SPRINT AI-12 — step 5.12 — AnswerQualityValidator.
+        # Score the LLM response on 8 quality axes. When the
+        # total score falls below 5.5, ``needs_retry`` is True;
+        # the conversation service does NOT loop because the
+        # 15s hard timeout caps the total request budget. The
+        # validator result is stamped on ``GenerationMeta``
+        # for the audit trail so the frontend trust disclosure
+        # can render the per-axis breakdown. Never raises.
+        try:
+            self._stamp_answer_quality(
+                assistant_resp=assistant_resp,
+                body=getattr(assistant_resp, "body", None) or "",
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
 
         # 6. Persist the assistant reply. Sources are the
         #    union of the provider's own sources and the
@@ -398,6 +582,728 @@ class ConversationService:
             object.__setattr__(assistant_resp, "generation", new_gen)
         except Exception:  # pragma: no cover — defensive
             return
+
+    def _stamp_direct_answer(
+        self,
+        *,
+        assistant_resp: Any,
+        direct_answer: str,
+    ) -> None:
+        """AI-6 — stamp the Direct Answer string onto GenerationMeta.
+
+        Same defensive pattern as ``_stamp_scenario_analysis``:
+        create a minimal GenerationMeta when the legacy mock-provider
+        path returned None, otherwise rebuild via
+        ``dataclasses.replace`` to preserve the frozen contract.
+        Never raises — a failure here would crash the chat endpoint
+        for a UI-only field, which is unacceptable.
+        """
+        try:
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    direct_answer=direct_answer,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            from dataclasses import replace
+            new_gen = replace(gen, direct_answer=direct_answer)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_missing_data(
+        self,
+        *,
+        assistant_resp: Any,
+        missing_data: tuple[MissingDataObject, ...],
+    ) -> None:
+        """AI-7 — stamp the structured ``MissingDataObject`` rows onto GenerationMeta.
+
+        Same defensive pattern as ``_stamp_scenario_analysis`` and
+        ``_stamp_direct_answer``: when the legacy mock-provider
+        path returned a None generation, build a minimal
+        GenerationMeta just so the rows have somewhere to live;
+        otherwise rebuild via ``dataclasses.replace`` to preserve
+        the frozen contract. The rows are serialised to plain
+        dicts before stamping so the dataclass tuple field
+        ``missing_data`` carries JSON-safe content — the
+        ``generation_meta_json`` column will write them back as a
+        list of dicts at persistence time.
+
+        Never raises — a failure here would crash the chat
+        endpoint for a UI-only field, which is unacceptable.
+        """
+        try:
+            payload = missing_data_to_payload(missing_data)
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    missing_data=tuple(payload),
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, missing_data=tuple(payload))
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_llm_tool_results(
+        self,
+        *,
+        assistant_resp: Any,
+        llm_tool_results: tuple[dict, ...] = (),
+    ) -> None:
+        """SPRINT AI-8 — stamp the validated tool-loop results onto
+        ``GenerationMeta.llm_tool_results``.
+
+        Mirrors the ``_stamp_missing_data`` defensive pattern:
+        when the legacy mock-provider path returned a ``None``
+        generation, build a minimal ``GenerationMeta`` so the
+        field has somewhere to live; otherwise rebuild via
+        ``dataclasses.replace`` to preserve the frozen contract.
+
+        The router already sanitised each entry (no leaked
+        secrets) — the stamper just preserves the existing
+        dict shape and copies it verbatim onto the meta tuple.
+
+        Never raises — a failure here would crash the chat
+        endpoint for an audit-only field, which is unacceptable.
+        """
+        try:
+            payload = tuple(
+                dict(item) if isinstance(item, dict) else {}
+                for item in (llm_tool_results or ())
+            )
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    llm_tool_results=payload,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, llm_tool_results=payload)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_explanation(
+        self,
+        *,
+        assistant_resp: Any,
+        context_snapshot: Any = None,
+        registry: Any = None,
+    ) -> None:
+        """SPRINT AI-10 — Explain My Answer. Build a
+        :class:`DecisionTrace` per recommendation and stamp the
+        resulting dict on ``GenerationMeta.explanation``.
+
+        The builder is a pure function over
+        ``Recommendation`` payload dicts + ``EvidenceRegistry``;
+        no LLM is involved. The trace is keyed by
+        ``recommendation_id`` so the frontend can look up the
+        right trace without iterating the dict.
+
+        Defensive pattern mirrors ``_stamp_missing_data``:
+        when the legacy mock-provider path returned a ``None``
+        generation, build a minimal ``GenerationMeta`` so the
+        field has somewhere to live; otherwise rebuild via
+        ``dataclasses.replace`` to preserve the frozen contract.
+
+        Never raises — a failure here would crash the chat
+        endpoint for an audit-only field, which is unacceptable.
+        """
+        try:
+            from app.services.ai.trace import build_trace
+
+            rec_payloads = self._collect_recommendation_payloads(
+                assistant_resp=assistant_resp,
+                context_snapshot=context_snapshot,
+            )
+            if not rec_payloads:
+                return
+
+            all_payloads = tuple(rec_payloads)
+            trace_dict: dict[str, dict] = {}
+            for rec_payload in all_payloads:
+                rec_id = str(rec_payload.get("id", "") or "")
+                if not rec_id:
+                    continue
+                trace = build_trace(
+                    rec_payload,
+                    ctx=context_snapshot,
+                    registry=registry,
+                    all_recs=all_payloads,
+                )
+                if not trace.is_empty():
+                    trace_dict[rec_id] = trace.to_dict()
+
+            if not trace_dict:
+                return
+
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    explanation=trace_dict,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, explanation=trace_dict)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    # ------------------------------------------------------------------ #
+    # SPRINT AI-12 — Universal Reasoning Layer stamping helpers.
+    # ------------------------------------------------------------------ #
+    # Three additive gates plus three audit-trail stampers. All
+    # follow the same defensive pattern as the legacy
+    # :meth:`_stamp_explanation` /
+    # :meth:`_stamp_missing_data` helpers: when the legacy
+    # mock-provider path returned a ``None`` generation, build a
+    # minimal ``GenerationMeta`` so the field has somewhere to
+    # live; otherwise rebuild via ``dataclasses.replace`` to
+    # preserve the frozen contract. Never raises.
+
+    def _stamp_evidence_requirements(
+        self,
+        *,
+        assistant_resp: Any,
+        evidence_requirements: Any,
+    ) -> None:
+        """SPRINT AI-12 — step 3.9. Stamp the
+        :class:`EvidenceRequirements` the planner produced on
+        ``GenerationMeta.evidence_requirements``."""
+        try:
+            if evidence_requirements is None:
+                return
+            payload = _safe_to_dict(evidence_requirements)
+            if payload is None:
+                return
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    evidence_requirements=payload,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, evidence_requirements=payload)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_contradiction_report(
+        self,
+        *,
+        assistant_resp: Any,
+        context_snapshot: Any,
+        envelopes: tuple = (),
+    ) -> None:
+        """SPRINT AI-12 — step 4.5. Run the
+        :class:`CrossSourceContradictionDetector` and stamp the
+        resulting report on ``GenerationMeta.contradiction_report``.
+
+        On ``severity == "high"`` the prompt is augmented with a
+        ``CONTRADICTIONS:`` disclosure block — but the caller
+        just stamps the audit row; the prompt-side augmentation
+        is the responsibility of the prompt builder.
+        """
+        try:
+            detector = CrossSourceContradictionDetector()
+            report = detector.detect(context_snapshot, envelopes)
+            payload = _safe_to_dict(report)
+            if payload is None:
+                return
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    contradiction_report=payload,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, contradiction_report=payload)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_answer_quality(
+        self,
+        *,
+        assistant_resp: Any,
+        body: str,
+    ) -> None:
+        """SPRINT AI-12 — step 5.5b. Score the assistant reply on
+        the 8 quality axes and stamp the result on
+        ``GenerationMeta.answer_quality``.
+        """
+        try:
+            validator = AnswerQualityValidator()
+            quality = validator.validate(body)
+            payload = _safe_to_dict(quality)
+            if payload is None:
+                return
+            gen = getattr(assistant_resp, "generation", None)
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    answer_quality=payload,
+                )
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(gen, answer_quality=payload)
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _stamp_answer_evidence(
+        self,
+        *,
+        assistant_resp: Any,
+        question_understanding: Any | None,
+        reasoning_plan: Any | None,
+        envelopes: tuple = (),
+        contradiction_report: Any | None = None,
+        parsed_response: Any | None = None,
+        context_snapshot: Any | None = None,
+    ) -> None:
+        """SPRINT AI-14 — defensive envelope stamper.
+
+        Runs AFTER ``_stamp_answer_quality`` and BEFORE
+        ``_message_payload`` so the wire envelope carries the
+        AI-14 fields even when the provider layer was bypassed
+        (legacy callers that pre-date the service.py hookups).
+        Each derivation is a pure function — same inputs always
+        return the same dict. Failures are silently swallowed so
+        the chat path stays non-breaking.
+
+        SPRINT AI-15 — also stamps the visualization + trust
+        envelope when the service layer did not run the AI-15
+        hookup.
+        """
+        try:
+            from app.services.ai.reasoning.answer_requirements import (
+                derive_answer_requirements,
+            )
+            from app.services.ai.reasoning.evidence_graph import (
+                build_evidence_graph,
+            )
+            from app.services.ai.reasoning.calculation_lineage import (
+                calculation_lineage_dicts,
+                missing_data_state,
+                unsupported_claims as _unsupported_claims,
+                fabricated_sources as _fabricated_sources,
+            )
+            # SPRINT AI-15 — visualization + trust imports.
+            from app.services.ai.reasoning.visualization_planner import (
+                plan as _viz_plan,
+            )
+            from app.services.ai.reasoning.chart_data_builder import (
+                build as _viz_build,
+            )
+            from app.services.ai.reasoning.trust_summary import (
+                build_trust_summary as _build_trust,
+            )
+            gen = getattr(assistant_resp, "generation", None)
+            ctx = context_snapshot
+            envelopes_t = tuple(envelopes or ())
+            answer_req = derive_answer_requirements(
+                question_understanding=question_understanding,
+                evidence_requirements=None,
+                tool_plan=reasoning_plan,
+                envelopes=envelopes_t,
+                context=ctx,
+            )
+            graph = build_evidence_graph(
+                question_understanding=question_understanding,
+                reasoning_plan=reasoning_plan,
+                envelopes=envelopes_t,
+                context=ctx,
+                contradiction_report=contradiction_report,
+                parsed_response=parsed_response,
+            )
+            lineage = calculation_lineage_dicts(envelopes_t)
+            missing = missing_data_state(graph=graph, proactive_rows=())
+            unsupported = len(_unsupported_claims(graph))
+            fabricated = len(_fabricated_sources(graph))
+            # SPRINT AI-15 — visualization + trust envelope.
+            ai15_plans = _viz_plan(
+                question_understanding=question_understanding,
+                answer_requirements=answer_req,
+                envelopes=envelopes_t,
+                evidence_graph=graph,
+                contradiction_report=contradiction_report,
+            ).plans
+            ai15_payloads = [
+                _viz_build(p, envelopes=envelopes_t).to_dict()
+                for p in ai15_plans
+            ]
+            existing_quality = (
+                gen.answer_quality if gen is not None else None
+            )
+            if not isinstance(existing_quality, dict):
+                existing_quality = None
+            ai15_trust = _build_trust(
+                assistant_context=ctx,
+                envelopes=envelopes_t,
+                evidence_graph=graph,
+                contradiction_report=contradiction_report,
+                answer_quality=existing_quality,
+                visualization_plans=ai15_plans,
+                tool_traces=(),
+            )
+            ai15_quality_warning = {
+                "needs_warning": bool(
+                    (existing_quality or {}).get("needs_warning")
+                ),
+                "warning_message": str(
+                    (existing_quality or {}).get("warning_message") or ""
+                ),
+            }
+            if gen is None:
+                gen = GenerationMeta.empty(
+                    mode="grounded",
+                    provider_used=getattr(assistant_resp, "provider_used", ""),
+                    model=getattr(assistant_resp, "model", ""),
+                    provider_latency_ms=getattr(
+                        assistant_resp, "provider_latency_ms", None
+                    ),
+                    fallback_used=bool(
+                        getattr(assistant_resp, "fallback_used", False)
+                    ),
+                    answer_requirements=answer_req.to_dict(),
+                    evidence_graph=graph.to_dict(),
+                    calculation_lineage=lineage,
+                    missing_data_state=missing,
+                    unsupported_claim_count=unsupported,
+                    fabricated_source_count=fabricated,
+                    # SPRINT AI-15 — visualization + trust.
+                    visualization_plans=ai15_payloads,
+                    quality_warning=ai15_quality_warning,
+                    trust_summary=ai15_trust,
+                )
+                # SPRINT AI-16 — scheme card + mixed composition.
+                # Both pure; failures swallowed defensively so
+                # the AI-15 path stays non-breaking. We stamp the
+                # fields onto the empty meta directly.
+                try:
+                    from app.services.ai.knowledge.ai16_scheme_composer import (
+                        compose_scheme_card as _ai16_scheme,
+                    )
+                    from app.services.ai.knowledge.ai16_mixed_composer import (
+                        compose_mixed_sections as _ai16_mixed,
+                    )
+                    scheme_payload = _ai16_scheme(
+                        question_understanding=question_understanding,
+                        context=ctx,
+                    )
+                    if scheme_payload is not None:
+                        object.__setattr__(
+                            gen,
+                            "scheme_card",
+                            scheme_payload.card.to_dict(),
+                        )
+                    mixed_blocks = _ai16_mixed(
+                        question_understanding=question_understanding,
+                        envelopes=envelopes_t,
+                        context=ctx,
+                    )
+                    if mixed_blocks.is_mixed:
+                        object.__setattr__(
+                            gen,
+                            "mixed_answer",
+                            mixed_blocks.to_dict(),
+                        )
+                except Exception:  # pragma: no cover — defensive
+                    pass
+                # SPRINT AI-17 — Bounded Quality Repair + Claim
+                # Lifecycle. The classifier + repair dispatcher
+                # + bounded-retry gate run AFTER the AI-16
+                # stamp and BEFORE the wire. The orchestrator
+                # is pure; the retry itself is the caller's
+                # responsibility, so we only mark
+                # ``retry_recommended`` here and let the
+                # upstream service decide.
+                try:
+                    from app.services.ai.knowledge.ai17_orchestrator import (
+                        run_ai17_pipeline,
+                        stamp_ai17_onto,
+                    )
+                    _ai17 = run_ai17_pipeline(
+                        payload=gen,
+                        starting_confidence=int(
+                            gen.confidence
+                            if gen.confidence is not None
+                            else 70
+                        ),
+                        materially_useful=True,
+                        budget_remaining_ms=15_000,
+                        hard_call_timeout_ms=15_000,
+                        retry_already_attempted=False,
+                        original_prompt=str(
+                            (getattr(
+                                request, "context", None
+                            ) and getattr(
+                                request.context, "question_text", ""
+                            )) or ""
+                        ),
+                    )
+                    stamp_ai17_onto(gen, pipeline_result=_ai17)
+                    new_conf = _ai17["adjusted_confidence"]
+                    if (
+                        new_conf is not None
+                        and (gen.confidence is None or new_conf != gen.confidence)
+                    ):
+                        object.__setattr__(gen, "confidence", new_conf)
+                except Exception:  # pragma: no cover — defensive
+                    pass
+                object.__setattr__(assistant_resp, "generation", gen)
+                return
+            new_gen = replace(
+                gen,
+                answer_requirements=answer_req.to_dict(),
+                evidence_graph=graph.to_dict(),
+                calculation_lineage=list(lineage),
+                missing_data_state=missing,
+                unsupported_claim_count=unsupported,
+                fabricated_source_count=fabricated,
+                # SPRINT AI-15 — visualization + trust.
+                visualization_plans=ai15_payloads,
+                quality_warning=ai15_quality_warning,
+                trust_summary=ai15_trust,
+            )
+            # SPRINT AI-16 — scheme card + mixed composition
+            # (overlays onto an existing GenerationMeta).
+            try:
+                from app.services.ai.knowledge.ai16_scheme_composer import (
+                    compose_scheme_card as _ai16_scheme,
+                )
+                from app.services.ai.knowledge.ai16_mixed_composer import (
+                    compose_mixed_sections as _ai16_mixed,
+                )
+                scheme_payload = _ai16_scheme(
+                    question_understanding=question_understanding,
+                    context=ctx,
+                )
+                scheme_card_dict = (
+                    scheme_payload.card.to_dict()
+                    if scheme_payload is not None
+                    else None
+                )
+                mixed_blocks = _ai16_mixed(
+                    question_understanding=question_understanding,
+                    envelopes=envelopes_t,
+                    context=ctx,
+                )
+                new_gen = replace(
+                    new_gen,
+                    scheme_card=scheme_card_dict,
+                    mixed_answer=(
+                        mixed_blocks.to_dict()
+                        if mixed_blocks.is_mixed
+                        else None
+                    ),
+                )
+            except Exception:  # pragma: no cover — defensive
+                pass
+            # SPRINT AI-17 — Bounded Quality Repair + Claim
+            # Lifecycle (overlay onto an existing GenerationMeta).
+            # Same composition as the empty-path branch; the
+            # orchestrator is pure, so we chain a second
+            # ``replace(...)`` with the AI-17 envelope fields.
+            try:
+                from app.services.ai.knowledge.ai17_orchestrator import (
+                    run_ai17_pipeline as _ai17_run,
+                )
+                _ai17_overlay = _ai17_run(
+                    payload=new_gen,
+                    starting_confidence=int(
+                        new_gen.confidence
+                        if new_gen.confidence is not None
+                        else 70
+                    ),
+                    materially_useful=True,
+                    budget_remaining_ms=15_000,
+                    hard_call_timeout_ms=15_000,
+                    retry_already_attempted=False,
+                    original_prompt=str(
+                        (getattr(
+                            request, "context", None
+                        ) and getattr(
+                            request.context, "question_text", ""
+                        )) or ""
+                    ),
+                )
+                # ``numeric_corrections`` + ``repair_applied`` are
+                # tuples so ``replace(...)`` accepts them directly.
+                new_gen = replace(
+                    new_gen,
+                    failure_classification=_ai17_overlay[
+                        "failure_classification"
+                    ],
+                    repair_applied=tuple(
+                        _ai17_overlay["applied_repairs"] or ()
+                    ),
+                    retry_attempted=bool(
+                        _ai17_overlay["retry_recommended"]
+                    ),
+                    retry_succeeded=None,
+                    numeric_corrections=tuple(
+                        r.to_dict()
+                        for r in _ai17_overlay["audit_log"].rows
+                    ),
+                    claim_lifecycle=_ai17_overlay[
+                        "lifecycle_store"
+                    ].to_dict(),
+                    bounded_repair_version=_ai17_overlay[
+                        "bounded_repair_version"
+                    ],
+                    confidence=_ai17_overlay["adjusted_confidence"],
+                )
+            except Exception:  # pragma: no cover — defensive
+                pass
+            object.__setattr__(assistant_resp, "generation", new_gen)
+        except Exception:  # pragma: no cover — defensive
+            return
+
+    def _collect_recommendation_payloads(
+        self,
+        *,
+        assistant_resp: Any,
+        context_snapshot: Any = None,
+    ) -> list[dict]:
+        """Collect every Recommendation payload available for tracing.
+
+        Source order (first non-empty wins):
+
+          1. ``generation.grounded_payload["recommendations"]`` —
+             the LLM-authored list (real provider path).
+          2. ``context_snapshot.recommendations`` — the upstream
+             ``AssistantContextRecommendation`` projections (the
+             deterministic fallback path; these lack provenance
+             fields but ``build_trace`` will derive what it can).
+          3. The ``claim_aware`` recommendations block — the
+             AI-3 envelope also lists recs.
+
+        Each source is normalised to the ``to_payload()`` dict
+        shape so the builder has a uniform input.
+        """
+        payloads: list[dict] = []
+        seen: set[str] = set()
+
+        def _normalise(raw: dict) -> dict | None:
+            """Return the payload dict or None if the input is malformed."""
+            if not isinstance(raw, dict):
+                return None
+            rec_id = str(raw.get("id", "") or "")
+            if not rec_id:
+                return None
+            if rec_id in seen:
+                return None
+            seen.add(rec_id)
+            return dict(raw)
+
+        # 1. LLM-authored recommendations (real provider path).
+        gen = getattr(assistant_resp, "generation", None)
+        if gen is not None:
+            grounded = getattr(gen, "grounded_payload", None) or {}
+            if isinstance(grounded, dict):
+                for r in grounded.get("recommendations") or ():
+                    norm = _normalise(r if isinstance(r, dict) else {})
+                    if norm:
+                        payloads.append(norm)
+                # Also pull from claim_aware.recommendations.
+                claim_aware = grounded.get("claim_aware") or {}
+                if isinstance(claim_aware, dict):
+                    for r in claim_aware.get("recommendations") or ():
+                        if isinstance(r, dict) and r.get("recommendation_id"):
+                            alt = dict(r)
+                            alt["id"] = str(r.get("recommendation_id"))
+                            norm = _normalise(alt)
+                            if norm:
+                                payloads.append(norm)
+
+        # 2. Context-projected recommendations (fallback / narrow path).
+        if context_snapshot is not None:
+            for r in getattr(context_snapshot, "recommendations", ()) or ():
+                norm = _normalise(
+                    {
+                        "id": getattr(r, "id", ""),
+                        "title": getattr(r, "title", ""),
+                        "category": getattr(r, "category", ""),
+                        "priority": getattr(r, "priority", "Medium"),
+                        "estimated_score_gain": getattr(
+                            r, "estimated_score_gain", 0
+                        ),
+                        "estimated_roi": getattr(r, "estimated_roi", 0),
+                        "estimated_timeline": getattr(r, "estimated_timeline", ""),
+                    }
+                )
+                if norm:
+                    payloads.append(norm)
+
+        return payloads
 
     def _build_history(
         self,
@@ -615,6 +1521,87 @@ def _message_payload(msg) -> dict:
     gen_claim_audit_soft_corrections = int(
         (generation or {}).get("claim_audit_soft_corrections") or 0
     )
+    # AI-7 — Missing-data intelligence. The structured
+    # ``missing_data`` rows the proactive detector (step 3.7)
+    # plus the reactive enrichment pass (step 5.8) emitted.
+    # Mirrored at the top level so the frontend's
+    # MissingInfoCard can render the 4-section "What I can
+    # tell / What I am missing / Why it matters / Next step"
+    # layout without drilling into ``generation.*``. Empty
+    # list on legacy rows + on intents without a required
+    # field map (GENERAL, BIGGEST_WEAKNESS, TWELVE_MONTH_ROADMAP).
+    gen_missing_data = list(
+        (generation or {}).get("missing_data") or []
+    )
+    # SPRINT AI-8 — Controlled Business Tool Router. The
+    # validated, sanitised, evidence-stamped results of the
+    # (optional) 2nd-turn tool-loop. Each entry has the shape
+    # ``{"tool", "status", "evidence_ids", "payload",
+    #   "duration_ms", "error"}``. Empty list when the LLM
+    # did not request any tools, or when the router rejected
+    # every request. Mirrored at the top level so the
+    # frontend ``ReasoningTrace`` can render the "used
+    # tools" pill row without drilling into
+    # ``generation.*``.
+    gen_llm_tool_results = list(
+        (generation or {}).get("llm_tool_results") or []
+    )
+    # SPRINT AI-10 — Explain My Answer. Per-recommendation
+    # decision traces stamped on every assistant turn. The
+    # dict is keyed by ``recommendation_id``; each value
+    # carries the six-section trace built from structured
+    # provenance metadata. ``None`` for legacy rows that
+    # pre-date AI-10; the frontend ``ExplanationPanel``
+    # falls back to "Explain this answer is unavailable for
+    # this message" in that case. Backward-compatible: every
+    # prior sprint's mirror block uses the same None-as-missing
+    # pattern (see claim_audit, scenario_analysis, etc.).
+    gen_explanation = (
+        (generation or {}).get("explanation")
+        if isinstance((generation or {}).get("explanation"), dict)
+        else None
+    )
+    # AI-11 — Universal Business-Aware Assistant hardening.
+    # Surface the capability tuple + business dependency
+    # literal on the wire so the frontend can render the
+    # universal-question classification without parsing the
+    # structured ``generation`` envelope. Both default to
+    # an empty list / ``"none"`` when missing.
+    gen_capability = list(
+        (generation or {}).get("capability") or []
+    )
+    gen_business_dependency = str(
+        (generation or {}).get("business_dependency") or "none"
+    )
+    if gen_business_dependency not in {"none", "optional", "required"}:
+        # Defensive normalisation — never let an unknown
+        # value leak through the wire projection.
+        gen_business_dependency = "none"
+
+    # SPRINT AI-13 — per-tool observability + partial-failure
+    # handling. Mirror the three AI-13 wire fields at the top
+    # level so the frontend renderer can render the trust +
+    # evidence UI without drilling into ``generation.*``.
+    gen_tool_execution_traces = list(
+        (generation or {}).get("tool_execution_traces") or []
+    )
+    gen_partial_failure_disclosure = (
+        (generation or {}).get("partial_failure_disclosure")
+        if (generation or {}).get("partial_failure_disclosure")
+        else None
+    )
+    try:
+        gen_confidence_penalty = int(
+            (generation or {}).get("confidence_penalty") or 0
+        )
+    except (TypeError, ValueError):
+        gen_confidence_penalty = 0
+    # Defensive clamp — the wire field is 0..40 today; the
+    # projector clamps to [0, 100] as a belt-and-braces guard.
+    if gen_confidence_penalty < 0:
+        gen_confidence_penalty = 0
+    if gen_confidence_penalty > 100:
+        gen_confidence_penalty = 100
 
     payload = {
         "id": int(msg.id),
@@ -680,6 +1667,126 @@ def _message_payload(msg) -> dict:
         # unchanged). Backward-compatible: legacy rows never
         # carry this key.
         "scenario_analysis": (generation or {}).get("scenario_analysis"),
+        # AI-6 — Trust-first visual UI. The first 1-3 sentences
+        # of the assistant's prose, server-extracted. Mirrored
+        # at the top level so the frontend can render the
+        # "Direct Answer" 10-second-read header without drilling
+        # into ``generation.*``. ``None`` when the prose was
+        # empty or when the legacy row pre-dates AI-6; the
+        # projector in AssistantView falls back to
+        # ``consultant.body`` / ``content`` in that case.
+        "direct_answer": (generation or {}).get("direct_answer"),
+        # AI-7 — Missing-data intelligence. The structured
+        # MissingDataObject list the proactive detector +
+        # reactive enrichment pass produced. Empty list
+        # when the wire is empty (legacy rows or intents
+        # without a required field map). The frontend's
+        # MissingInfoCard reads this top-level field.
+        "missing_data": gen_missing_data,
+        # AI-8 — controlled tool router mirror. Empty for
+        # legacy rows / first-turn LLMs that did not request
+        # any tools. The frontend ``ReasoningTrace`` falls
+        # back to the existing rendering when the list is
+        # empty.
+        "llm_tool_results": gen_llm_tool_results,
+        # AI-10 — Explain My Answer. Mirrored at the top
+        # level so the frontend ``ExplanationPanel`` can
+        # render the 6-section trace without drilling into
+        # ``generation.*``. ``None`` for legacy rows; the
+        # panel hides itself entirely in that case.
+        "explanation": gen_explanation,
+        # AI-11 — Universal Business-Aware Assistant hardening.
+        # Multi-label capability tuple + business dependency
+        # literal mirrored at the top level. Empty list /
+        # ``"none"`` for legacy rows so the renderer sees a
+        # stable shape regardless of message age.
+        "capability": gen_capability,
+        "business_dependency": gen_business_dependency,
+        # AI-13 — Production Orchestration wire mirror. The
+        # three additive fields are flat-copied from the
+        # generation envelope so the frontend trust + evidence
+        # UI can render without drilling into ``generation.*``.
+        "tool_execution_traces": gen_tool_execution_traces,
+        "partial_failure_disclosure": gen_partial_failure_disclosure,
+        "confidence_penalty": gen_confidence_penalty,
+        # AI-14 — Universal Answer Intelligence + Evidence
+        # Graph. Six additive wire mirrors. The first two
+        # (``answer_requirements`` + ``evidence_graph``) are the
+        # largest JSON shapes (16-field + multi-tuple dataclasses)
+        # and are surfaced at the top level so the frontend
+        # renderer can read them in a single TypeScript
+        # destructure. The remaining four
+        # (``calculation_lineage``, ``missing_data_state``,
+        # ``unsupported_claim_count``, ``fabricated_source_count``)
+        # are sourced from the ``generation`` envelope directly.
+        "answer_requirements": (generation or {}).get(
+            "answer_requirements"
+        ),
+        "evidence_graph": (generation or {}).get("evidence_graph"),
+        "calculation_lineage": list(
+            (generation or {}).get("calculation_lineage") or []
+        ),
+        "missing_data_state": (generation or {}).get(
+            "missing_data_state"
+        ),
+        "unsupported_claim_count": _safe_int(
+            (generation or {}).get("unsupported_claim_count"), 0
+        ),
+        "fabricated_source_count": _safe_int(
+            (generation or {}).get("fabricated_source_count"), 0
+        ),
+        # SPRINT AI-15 — Intelligent Visualization + Trust-First
+        # UX. Three additive top-level mirrors sourced from the
+        # ``generation`` envelope. ``visualization_plans`` powers
+        # the chart slots inside TrustFirstResponse.
+        # ``quality_warning`` powers the concise low-quality
+        # warning strip the brief mandates. ``trust_summary``
+        # powers the "Why this answer?" disclosure panel.
+        "visualization_plans": list(
+            (generation or {}).get("visualization_plans") or []
+        ),
+        "quality_warning": (generation or {}).get("quality_warning"),
+        "trust_summary": (generation or {}).get("trust_summary"),
+        # SPRINT AI-16 — Verified External Knowledge + Freshness
+        # Layer. Five additive top-level mirrors sourced from
+        # the ``generation`` envelope. ``external_claims`` powers
+        # the "Sources we consulted" disclosure;
+        # ``freshness_warnings`` powers the "Stale source"
+        # inline notice; ``scheme_card`` / ``external_answer``
+        # / ``mixed_answer`` power their dedicated UI cards.
+        "external_claims": list(
+            (generation or {}).get("external_claims") or []
+        ),
+        "freshness_warnings": list(
+            (generation or {}).get("freshness_warnings") or []
+        ),
+        "scheme_card": (generation or {}).get("scheme_card"),
+        "external_answer": (generation or {}).get("external_answer"),
+        "mixed_answer": (generation or {}).get("mixed_answer"),
+        # SPRINT AI-17 — Bounded Quality Repair + Claim
+        # Lifecycle. Eight additive top-level mirrors sourced
+        # from the ``generation`` envelope. The renderer reads
+        # ``failure_classification`` + ``retry_attempted`` to
+        # surface the failure / retries badge; ``claim_lifecycle``
+        # + ``numeric_corrections`` power the audit trail panel
+        # in the trust disclosure.
+        "failure_classification": (generation or {}).get(
+            "failure_classification", "none"
+        ),
+        "repair_applied": list(
+            (generation or {}).get("repair_applied") or []
+        ),
+        "retry_attempted": bool(
+            (generation or {}).get("retry_attempted") or False
+        ),
+        "retry_succeeded": (generation or {}).get("retry_succeeded"),
+        "numeric_corrections": list(
+            (generation or {}).get("numeric_corrections") or []
+        ),
+        "claim_lifecycle": (generation or {}).get("claim_lifecycle"),
+        "bounded_repair_version": (
+            generation or {}
+        ).get("bounded_repair_version", ""),
     }
     # H7.8C — leak guard. The serializer must never emit a
     # field name from the brief-mandated secret set
@@ -729,58 +1836,67 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
+def _safe_int(value: Any, default: int) -> int:
+    """Coerce ``value`` to int; return ``default`` on TypeError/ValueError.
+
+    Used by the AI-14 projector to read the two integer counters
+    (``unsupported_claim_count``, ``fabricated_source_count``)
+    off the wire payload without crashing the chat path on a
+    malformed legacy row.
+    """
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _safe_to_dict(value: Any) -> dict | None:
+    """Return ``value.to_dict()`` if the value exposes one, else ``None``.
+
+    Tolerant of missing ``to_dict`` — returns ``None`` so the
+    AI-12 stamping helpers can no-op when the underlying
+    dataclass is malformed. Never raises.
+    """
+    try:
+        if value is None:
+            return None
+        to_dict = getattr(value, "to_dict", None)
+        if not callable(to_dict):
+            return None
+        out = to_dict()
+        return out if isinstance(out, dict) else None
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
 # H7.8C — the brief-mandated list of fields that must NEVER
 # appear in a wire payload. The service layer asserts this set
 # is disjoint from every payload it emits. Adding a new
 # sensitive key here is a non-breaking change (it just adds
 # another field to the leak guard). Removing a key is a
 # breaking change for the audit trail.
-_LEAKED_FIELDS = frozenset(
-    {
-        "api_key",
-        "authorization",
-        "auth_header",
-        "base_url",
-        "upstream_url",
-        "secret",
-        "bearer",
-        "access_token",
-    }
+#
+# SPRINT AI-8 — the canonical home for these constants +
+# ``assert_no_leaked_secrets`` is now
+# ``app.services.ai.sanitisation``. Re-exported here for
+# backwards compatibility — every existing import keeps
+# working byte-identical.
+from app.services.ai.sanitisation import (
+    LEAKED_FIELDS as _LEAKED_FIELDS,
+    assert_no_leaked_secrets as _assert_no_leaked_secrets_impl,
+    strip_leaked_secrets as _strip_leaked_secrets,
 )
 
 
 def _assert_no_leaked_secrets(payload: dict | None, *, where: str) -> None:
-    """Raise ``ValueError`` if ``payload`` contains any key in
-    :data:`_LEAKED_FIELDS`.
-
-    H7.8C — the brief mandates that the assistant response
-    NEVER exposes API keys, authorization headers, or base
-    URLs. The audit-fixed provider layer never includes these
-    fields, but a future refactor could accidentally paste a
-    config dict into the payload. This guard catches that
-    regression at the projection boundary, in the same place
-    that fixes the brief, so any future change is forced to
-    think about the leak surface.
-
-    Parameters
-    ----------
-    payload:
-        The dict the serializer is about to emit (either the
-        ``generation`` envelope or the top-level message
-        payload). ``None`` is a no-op.
-    where:
-        Short label used in the error message so the audit
-        log knows which surface leaked.
+    """Backwards-compatible thin wrapper around the AI-8
+    canonical implementation in
+    :mod:`app.services.ai.sanitisation`. The function body
+    lives there; this re-export preserves any code that
+    imported ``_assert_no_leaked_secrets`` from this
+    module by attribute name.
     """
-    if not payload:
-        return
-    leaked = set(payload.keys()) & _LEAKED_FIELDS
-    if leaked:
-        raise ValueError(
-            f"H7.8C leak guard tripped at {where}: "
-            f"refusing to serialise payload containing "
-            f"secrets: {sorted(leaked)!r}"
-        )
+    _assert_no_leaked_secrets_impl(payload, where=where)
 
 
 def _generation_meta_to_payload(meta) -> dict | None:
@@ -816,6 +1932,62 @@ def _generation_meta_to_payload(meta) -> dict | None:
     if not out.get("runtime_provider"):
         out["runtime_provider"] = out.get("provider") or ""
     _assert_no_leaked_secrets(out, where="_generation_meta_to_payload")
+    return out
+
+
+def _extract_direct_answer(prose: str | None, *, max_sentences: int = 3) -> str | None:
+    """SPRINT AI-6 — extract the "Direct Answer" first 1-3 sentences.
+
+    The brief mandates that every assistant reply start with a
+    1-3 sentence direct answer the user can read within 10
+    seconds. The backend extracts this on the LLM path and
+    stamps it onto :class:`GenerationMeta.direct_answer`; the
+    frontend renders it as the top of every reply. The legacy
+    fallback path returns ``None`` and the projector derives the
+    direct answer from ``consultant.body`` / ``content``.
+
+    Sentence boundary detection is intentionally minimal — we
+    split on ``.``, ``!``, ``?`` followed by whitespace (or end
+    of string) and trim markdown prefixes (``- ``, ``* ``,
+    ``> ``). The function never returns more than
+    ``max_sentences`` non-empty sentences, never returns more
+    than 600 characters (the schema cap), and returns ``None``
+    when the prose has no extractable sentences.
+
+    The function is pure: same input → same output, no I/O, no
+    logging. Verified by ``test_ai6_direct_answer.py``.
+    """
+    if not prose or not isinstance(prose, str):
+        return None
+    raw = prose.strip()
+    if not raw:
+        return None
+    # Split on sentence-ending punctuation. Keep the
+    # punctuation attached so the snippet reads naturally.
+    import re
+
+    parts = re.split(r"(?<=[.!?])\s+", raw)
+    cleaned: list[str] = []
+    for part in parts:
+        # Strip leading markdown list / blockquote markers
+        # so " - Sentence." reads as "Sentence.".
+        stripped = part.lstrip(" \t-*>#").strip()
+        # Drop empty entries (multiple whitespace, etc.).
+        if not stripped:
+            continue
+        cleaned.append(stripped)
+        if len(cleaned) >= max_sentences:
+            break
+    if not cleaned:
+        return None
+    out = " ".join(cleaned)
+    # Schema cap — ChatGenerationMeta.direct_answer is
+    # ``str | None`` with no explicit length but the
+    # ChatMessageOut top-level mirror is documented as a
+    # short 1-3 sentence string. Truncate to 600 chars
+    # defensively so a long legacy body never blows the wire.
+    if len(out) > 600:
+        out = out[:597].rstrip() + "..."
     return out
 
 

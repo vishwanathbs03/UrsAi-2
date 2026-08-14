@@ -25,7 +25,7 @@ The full request chain observed programmatically via `scripts/debug_provider_sta
 browser (localhost:3000, dev tools, axios with credentials: include)
    └─ fetch("/api/v1/chat/provider-status")          [same-origin → no CORS]
       └─ Next.js rewrite proxy (next.config.mjs:15)
-         └─ http://127.0.0.1:8001/api/v1/chat/provider-status
+         └─ http://127.0.0.1:8090/api/v1/chat/provider-status
             └─ FastAPI chat router
                └─ provider_status() handler
                   └─ AssistantProviderService.provider_status()
@@ -54,7 +54,7 @@ The user observed what looked like a 401. The actual status was **422** (route-o
 
 Two corroborating traces prove this:
 
-* Direct `curl http://127.0.0.1:8001/api/v1/chat/provider-status` (no cookie) → `401 {"detail":"Not authenticated."}`
+* Direct `curl http://127.0.0.1:8090/api/v1/chat/provider-status` (no cookie) → `401 {"detail":"Not authenticated."}`
 * Authenticated `requests.get(..., headers={"Cookie": "atlas_access_token=valid_jwt"})` → `422 {"detail":[{"type":"int_parsing","loc":["path","session_id"],...}]}`
 
 The bogus-curl-via-`req.cookies` chain in `debug_provider_status.py` initially printed two different responses (401 for a fake cookie, 422 for a valid cookie). That asymmetry is the smoking gun: when the JWT is malformed the auth dep short-circuits and the 401 escapes; when the JWT is valid, the path validator runs first and the 422 escapes. FastAPI's dep-resolution order plus the route declaration order combined to make the bug invisible until the diagnostic script tried both paths.

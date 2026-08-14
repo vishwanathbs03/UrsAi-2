@@ -56,7 +56,7 @@ from enum import Enum
 
 
 class QuestionIntent(str, Enum):
-    """The six recognised question intents.
+    """The recognised question intents.
 
     Order matters: the router returns the FIRST match in
     keyword-priority order. A prompt that matches both
@@ -64,6 +64,12 @@ class QuestionIntent(str, Enum):
     classified as ``REACH_REVENUE_TARGET`` (the more specific
     framing) and the schemes surface in the secondary
     "Additional schemes referenced" section.
+
+    SPRINT AI-7 — ``HIRING`` is added to surface the brief's
+    "Can I afford to hire five employees?" example. The intent
+    priority keeps the existing five flagship intents ahead of
+    it so the HIRING route only wins when the prompt is clearly
+    about hiring, payroll, or team expansion.
     """
 
     REACH_REVENUE_TARGET = "reach_revenue_target"
@@ -71,6 +77,7 @@ class QuestionIntent(str, Enum):
     GOVERNMENT_SCHEMES = "government_schemes"
     TWELVE_MONTH_ROADMAP = "twelve_month_roadmap"
     EXPORT_EXPANSION = "export_expansion"
+    HIRING = "hiring"
     GENERAL = "general"
 
 
@@ -108,6 +115,17 @@ _EXPORT_KEYWORDS = (
     "overseas", "foreign market", "ship abroad",
     "export market", "export expansion",
 )
+# SPRINT AI-7 — HIRING keywords. Scoped so flagship intents win
+# on collisions ("hire someone to help me reach ₹5 Cr" is a
+# REACH_REVENUE_TARGET prompt, not HIRING). The cue words are
+# tightly written to the brief's example + common variations.
+_HIRING_KEYWORDS = (
+    "hire ", "hiring", "recruit", "recruitment",
+    "afford to hire", "additional payroll",
+    "team expansion", "headcount",
+    "first hire", "next hire",
+    "new employee", "new staff",
+)
 
 _INTENT_PRIORITY = (
     QuestionIntent.REACH_REVENUE_TARGET,
@@ -115,6 +133,7 @@ _INTENT_PRIORITY = (
     QuestionIntent.GOVERNMENT_SCHEMES,
     QuestionIntent.TWELVE_MONTH_ROADMAP,
     QuestionIntent.EXPORT_EXPANSION,
+    QuestionIntent.HIRING,
 )
 
 
@@ -132,6 +151,7 @@ def classify_intent(prompt: str) -> QuestionIntent:
       3. GOVERNMENT_SCHEMES
       4. TWELVE_MONTH_ROADMAP
       5. EXPORT_EXPANSION
+      6. HIRING    (SPRINT AI-7)
     """
     text = (prompt or "").lower()
     if not text.strip():
@@ -147,6 +167,8 @@ def classify_intent(prompt: str) -> QuestionIntent:
         return QuestionIntent.TWELVE_MONTH_ROADMAP
     if _any_match(text, _EXPORT_KEYWORDS):
         return QuestionIntent.EXPORT_EXPANSION
+    if _any_match(text, _HIRING_KEYWORDS):
+        return QuestionIntent.HIRING
     return QuestionIntent.GENERAL
 
 
@@ -235,6 +257,10 @@ def build_intent_frame(
         primary = _export_sections(context)
         secondary = ()
         framing = _TASK_FRAMING_EXPORT
+    elif intent is QuestionIntent.HIRING:
+        primary = _hiring_sections(context)
+        secondary = ()
+        framing = _TASK_FRAMING_HIRING
     else:
         primary = ()
         secondary = ()
@@ -876,6 +902,114 @@ def _secondary_schemes(context) -> tuple[IntentSection, ...]:
     )
 
 
+def _hiring_sections(context) -> tuple[IntentSection, ...]:
+    """SPRINT AI-7 — sections for "Can I afford to hire ...?" prompts.
+
+    Reads the hire-affordability inputs (annual revenue, headcount,
+    payroll, cash flow, operating margin) directly from
+    AssistantContext. NEVER invents payroll, cash flow, or margin
+    figures — when absent, the per-section ``IntentSection.
+    limitations`` is populated so the AI-7 detector can harvest the
+    gap as a structured ``MissingDataObject``.
+
+    No "eligibility" language; the AI-7 detector is the source of
+    truth for affordability gaps and the brief is explicit the
+    assistant must NOT invent the answer.
+    """
+    rev = getattr(context, "annual_revenue_inr", 0) or 0
+    headcount = getattr(context, "employee_count", "unknown") or "unknown"
+    payroll = getattr(context, "monthly_payroll_cost_inr", 0) or 0
+    cash_flow = getattr(context, "monthly_operating_cash_flow_inr", 0) or 0
+    margin = getattr(context, "operating_margin_pct", 0.0) or 0.0
+
+    bullets: list[str] = []
+    limitations: list[str] = []
+    if rev:
+        bullets.append(f"Current annual revenue: {_fmt_inr_cr(rev)}.")
+    else:
+        bullets.append("Current annual revenue: not recorded in your profile.")
+    if headcount != "unknown" and headcount:
+        bullets.append(f"Current headcount: {headcount}.")
+    else:
+        bullets.append("Current headcount: not recorded in your profile.")
+    if not payroll:
+        limitations.append(
+            "Current monthly payroll cost is not in your profile — "
+            "add it in Business → Costs so the assistant can size "
+            "the affordability of an additional hire."
+        )
+    if not cash_flow:
+        limitations.append(
+            "Current monthly operating cash flow is not in your "
+            "profile — the sustainability of the new payroll "
+            "depends on it."
+        )
+    if not margin:
+        limitations.append(
+            "Current operating margin is not in your profile — "
+            "the assistant cannot judge whether the business "
+            "absorbs the new fixed cost without it."
+        )
+
+    # Section 1 — what we know about the business (verified facts).
+    section_one = IntentSection(
+        header="1. CURRENT BUSINESS STATE",
+        bullets=tuple(bullets),
+        limitations=tuple(limitations),
+        assumptions=(
+            "Headcount + payroll + cash flow are read from the "
+            "Business Profile and the Costs sheet. The assistant "
+            "does not invent them when they are absent.",
+        ),
+    )
+
+    # Section 2 — the verdict. Without the inputs, the assistant
+    # does not commit to a YES / NO; the verdict is "inconclusive"
+    # and the section says so explicitly.
+    verdict_bullets: list[str] = []
+    if payroll and cash_flow:
+        verdict_bullets.append(
+            "Inputs are present — the assistant can render an "
+            "affordability verdict for the next hire."
+        )
+    else:
+        verdict_bullets.append(
+            "Affordability cannot be calculated without the "
+            "missing inputs. The AI-7 Missing Information card "
+            "lists the gaps and the next step."
+        )
+    section_two = IntentSection(
+        header="2. AFFORDABILITY VERDICT",
+        bullets=tuple(verdict_bullets),
+        limitations=tuple(limitations),
+    )
+
+    # Section 3 — recommendations (only when inputs are present).
+    if payroll and cash_flow:
+        rec_bullets = [
+            "  • Pin the new hire to the role that compresses "
+            "your biggest constraint (sales OR ops OR finance).",
+            "  • Outsource / fractional first if score < 60; full-"
+            "time hire if score ≥ 60 and runway ≥ 6 months.",
+            "  • Re-evaluate after 90 days; revisit affordability "
+            "as new payroll costs land.",
+        ]
+    else:
+        rec_bullets = [
+            "  • Fill the missing inputs in Business Profile → "
+            "Costs so the assistant can render an affordability "
+            "verdict on the next prompt.",
+            "  • See the AI-7 Missing Information card for the "
+            "structured gap list + suggested sources.",
+        ]
+    section_three = IntentSection(
+        header="3. RECOMMENDED MOVES",
+        bullets=tuple(rec_bullets),
+    )
+
+    return (section_one, section_two, section_three)
+
+
 # --------------------------------------------------------------------------- #
 # Task Framing blocks (real-LLM prompt)
 # --------------------------------------------------------------------------- #
@@ -973,6 +1107,21 @@ Your response MUST contain, in this order:
   6. NEXT ACTIONS — three concrete first steps.
 
 Forbidden: claiming you will export, recommending markets not justified by industry context.
+""".strip()
+
+
+_TASK_FRAMING_HIRING = """
+=== TASK FRAMING (server-detected intent: HIRING) ===
+
+You are answering: "Can I afford to hire ...?"
+
+Your response MUST contain, in this order:
+  1. CURRENT BUSINESS STATE — headcount, payroll, cash flow, operating margin.
+  2. AFFORDABILITY VERDICT — YES / WAIT / NO, grounded in the inputs.
+  3. MISSING INPUTS — explicitly list any field the assistant does NOT have (the AI-7 detector surfaces these as structured MissingDataObject rows).
+  4. RECOMMENDED MOVES — pin the new hire to the role that compresses your biggest constraint.
+
+Forbidden: inventing payroll, cash flow, or operating margin figures; committing to a YES/NO verdict when the inputs are absent.
 """.strip()
 
 

@@ -240,7 +240,7 @@ python tests/test_h7_1_business_persistence.py
 # 3. Start the stack
 # Terminal 1
 cd backend
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8090 --reload
 
 # Terminal 2
 cd frontend

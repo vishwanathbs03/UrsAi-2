@@ -103,13 +103,19 @@ def test_2_stub_tool_returns_not_implemented():
 
 
 def test_3_selector_picks_from_plan_services(acme_plan, acme_understanding, acme_context):
-    """The selector reads from ReasoningPlan.applicable_deterministic_services."""
+    """The selector reads from ReasoningPlan.applicable_deterministic_services.
+
+    SPRINT AI-12 — the selector returns a :class:`ToolPlan`
+    instead of a flat tuple. The legacy tuple is exposed via
+    ``plan.all_tools()`` so existing tests stay valid.
+    """
     selector = ToolSelector()
-    calls = selector.select(
+    plan = selector.select(
         question_understanding=acme_understanding,
         reasoning_plan=acme_plan,
         context=acme_context,
     )
+    calls = plan.all_tools()
     assert len(calls) >= 1
     assert all(isinstance(c, ToolCall) for c in calls)
     # The selector never exceeds the cap
@@ -144,11 +150,12 @@ def test_4_selector_caps_at_max_tool_calls(acme_understanding, acme_context):
         ),
     )
     selector = ToolSelector()
-    calls = selector.select(
+    tool_plan = selector.select(
         question_understanding=acme_understanding,
         reasoning_plan=plan,
         context=acme_context,
     )
+    calls = tool_plan.all_tools()
     assert len(calls) == 5
 
 

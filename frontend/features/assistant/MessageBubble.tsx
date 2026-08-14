@@ -13,11 +13,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage as ChatMessageModel } from "./types";
-import { ConsultantRenderer } from "./ConsultantRenderer";
-import { GroundedResponseRenderer } from "./GroundedResponseRenderer";
-import { ScenarioAnalysisCard } from "./ScenarioAnalysisCard";
+import { TrustFirstResponse } from "./TrustFirstResponse";
 import { formatAssistantBody } from "./AssistantRenderer";
-import { TrustBadge, TrustMeta, type TrustLabel } from "./TrustBadge";
+import type { TrustLabel } from "./TrustBadge";
+import type { AssistantContext } from "./types";
 
 interface MessageBubbleProps {
   message: ChatMessageModel;
@@ -25,6 +24,15 @@ interface MessageBubbleProps {
   memoryTopics?: string[];
   /** Called when the user clicks a smart follow-up chip. */
   onFollowUp?: (label: string) => void;
+  /**
+   * Optional AssistantContext snapshot — used by the AI-6
+   * TrustFirstResponse shell to surface concrete evidence
+   * values ("Revenue ₹1.80 Cr", "Health score 68/100",
+   * "Supplier concentration 75%") instead of raw evidence
+   * IDs. The shell tolerates absence by falling back to
+   * generic labels.
+   */
+  context?: AssistantContext | null;
 }
 
 /**
@@ -44,22 +52,20 @@ interface MessageBubbleProps {
  */
 export function MessageBubble({
   message,
-  memoryTopics,
+  memoryTopics: _memoryTopics,
   onFollowUp,
+  context,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
   const [vote, setVote] = useState<"up" | "down" | null>(null);
-  const isStructured = !isUser && !!message.consultant;
-  // H7.8C P3 — the server-validated GroundedResponse takes
-  // precedence over the legacy ``consultant`` payload when
-  // both are present. The GroundingValidator has already
-  // checked every claim; we just render the nine sections.
-  const groundedPayload = !isUser ? message.generation?.grounded_payload : null;
-  const isGrounded = !!groundedPayload;
+  // The legacy 3-state derivation is still exported because
+  // downstream tests + the TrustFirstResponse shell consume it.
+  // The path-selection itself now lives in the shell.
 
   const handleCopy = () => {
     if (typeof navigator !== "undefined" && navigator.clipboard) {
+      const groundedPayload = message.generation?.grounded_payload ?? null;
       let text = message.content;
       if (groundedPayload) {
         // H7.8C — the GroundedResponseRenderer renders nine
@@ -123,46 +129,42 @@ export function MessageBubble({
           isUser ? "items-end" : "items-start",
         )}
       >
-        {/* Sprint AI-5 — Business Scenario Copilot. The
-            structured 10-field envelope rendered as a
-            "what if" card above the body content. Hidden
-            entirely when the message is not a scenario
-            prompt (the LLM route runs unchanged). */}
-        {!isUser && message.scenario_analysis && (
-          <ScenarioAnalysisCard
-            analysis={message.scenario_analysis}
-            className="self-stretch"
-          />
-        )}
-        {isGrounded ? (
+        {/* Sprint AI-6 — Trust-first visual UI.
+            Every assistant message renders through the
+            TrustFirstResponse shell:
+              1. Direct Answer (1-3 sentences)
+              2. TrustBar (5 mutually-exclusive labels)
+              3. Top Recommendation
+              4. Secondary cards (all collapsed by default)
+              5. Technical provenance (collapsed)
+            For user messages, the legacy bubble still
+            renders. The standalone TrustBadge / TrustMeta
+            pair below the bubble is removed — the shell
+            embeds them now. The GroundedResponseRenderer
+            and ConsultantRenderer are kept mounted inside
+            the "What I found" card so the original 9-section
+            / 6-section detail is preserved. */}
+        {!isUser ? (
           <div
-            data-testid="grounded-message-bubble"
+            data-testid="assistant-message-bubble"
             className={cn(
               "relative group w-full rounded-2xl border border-border bg-card text-card-foreground shadow-soft transition-shadow",
               "hover:shadow-md",
             )}
           >
             <div className="space-y-3 p-3 sm:p-4">
-              <GroundedResponseRenderer response={groundedPayload!} />
-            </div>
-            <ActionToolbar
-              copied={copied}
-              onCopy={handleCopy}
-              vote={vote}
-              onVote={setVote}
-            />
-          </div>
-        ) : isStructured ? (
-          <div
-            className={cn(
-              "relative group w-full rounded-2xl border border-border bg-card text-card-foreground shadow-soft transition-shadow",
-              "hover:shadow-md",
-            )}
-          >
-            <div className="space-y-3 p-3 sm:p-4">
-              <ConsultantRenderer
-                response={message.consultant!}
-                memoryTopics={memoryTopics}
+              <TrustFirstResponse
+                message={message}
+                context={
+                  context
+                    ? {
+                        score: context.score,
+                        recommendations: context.recommendations,
+                        dnaArchetype: context.dna.archetype,
+                        dnaMatch: context.dna.match,
+                      }
+                    : null
+                }
                 onFollowUp={onFollowUp}
               />
             </div>
@@ -187,55 +189,13 @@ export function MessageBubble({
             ) : (
               <TypedBody text={message.content} />
             )}
-            {!isUser && (
-              <ActionToolbar
-                copied={copied}
-                onCopy={handleCopy}
-                vote={vote}
-                onVote={setVote}
-              />
-            )}
           </div>
         )}
-        {!isUser && message.sources && message.sources.length > 0 && !isStructured && (
+        {!isUser && message.sources && message.sources.length > 0 && (
           <SourceList sources={message.sources} />
         )}
-        {!isUser && !isStructured && (
-          <FollowUpChips message={message} />
-        )}
-        {/* H7.8C — three-state trust badge + TrustMeta disclosure.
-            The provider source-of-truth is the per-message
-            ``generation`` envelope. We derive the badge label from
-            it; we never infer from text heuristics.
-
-            1. ``generation.fallback_used === true`` → rule_engine
-            2. ``generation.mode === "open"`` (LLM-answered) → open_domain
-            3. ``generation.grounding_validated === true`` → generated
-            4. fall back to the legacy ``message.fallback_used`` flag
-               for messages without a generation envelope (the
-               client-side deterministic consultant). */}
         {!isUser && (
-          <TrustBadge
-            label={deriveTrustLabel(message)}
-            className="self-start"
-          />
-        )}
-        {!isUser && message.generation && (
-          <TrustMeta
-            confidence={message.generation.confidence ?? undefined}
-            assumptions={message.generation.assumptions}
-            limitations={message.generation.limitations}
-            evidence={message.generation.evidence_references}
-            generatedAt={message.generation.generated_at}
-            provider={message.generation.provider}
-            model={message.generation.model}
-            fallbackReason={message.generation.fallback_reason}
-            groundingScore={message.generation.server_grounding_score}
-            promptTruncated={message.generation.prompt_truncated}
-            providerLatencyMs={message.generation.provider_latency_ms ?? undefined}
-            contextManifest={message.generation.context_manifest}
-            className="self-start"
-          />
+          <FollowUpChips message={message} />
         )}
         <time
           dateTime={message.createdAt}
@@ -312,8 +272,11 @@ function ActionToolbar({
 
 function FollowUpChips({ message }: { message: ChatMessageModel }) {
   const followUps = useMemo(() => deriveFollowUps(message), [message]);
-  if (followUps.length === 0) return null;
+  // Hooks must run unconditionally. We always allocate the
+  // busy state even when there are no follow-ups so we
+  // never violate the rules-of-hooks invariant.
   const [busy, setBusy] = useState<string | null>(null);
+  if (followUps.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-2 px-1">
       <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">

@@ -217,6 +217,15 @@ class EvaluationRunner:
         completed (with or without LLM) — the runner NEVER
         catches AIProviderError silently so the metrics
         calculator can see what happened.
+
+        Latency: ``latency_ms`` is the wall-clock milliseconds
+        the call took, clamped to a minimum of 1 ms so the
+        metrics calculator's latency percentiles always have
+        a positive integer to aggregate. The deterministic
+        fallback path is fast enough that ``perf_counter``
+        can round down to 0; the clamp is honest (a 0 ms
+        reading is "faster than 1 ms") and preserves the
+        relative ordering needed by p50 / p95.
         """
         start = time.perf_counter()
         try:
@@ -227,16 +236,16 @@ class EvaluationRunner:
                 mode=mode,
             )
         except Exception as exc:  # pragma: no cover — defensive
-            elapsed = int((time.perf_counter() - start) * 1000)
+            elapsed_ms = max(1, int((time.perf_counter() - start) * 1000))
             return EvaluationResult(
                 case_id=case_id or prompt[:40],
                 prompt=prompt,
                 production_path=True,  # reached the service
-                latency_ms=elapsed,
+                latency_ms=elapsed_ms,
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
-        elapsed = int((time.perf_counter() - start) * 1000)
+        elapsed_ms = max(1, int((time.perf_counter() - start) * 1000))
         body = getattr(resp, "body", "") or ""
         gen = getattr(resp, "generation", None)
         # Evidence count = explicit references + structured
@@ -260,10 +269,36 @@ class EvaluationRunner:
             if gen is not None
             else False,
             "answer_mode": getattr(gen, "answer_mode", "") if gen is not None else "",
+            # SPRINT AI-18 — freeze gate. The brief lists
+            # business_dependency_accuracy as a metric; the
+            # runner now projects the value onto the notes
+            # bag so MetricsCalculator can read it.
+            "business_dependency": str(
+                getattr(gen, "business_dependency", "none")
+                if gen is not None
+                else "none"
+            ),
             "capability": list(getattr(gen, "capability", ()) or ())
             if gen is not None
             else [],
             "evidence_count": evidence_count,
+            # SPRINT AI-19 — evidence correctness closure.
+            # The structural metric walks
+            # ``structured_tool_envelopes`` so the matcher
+            # can read tool claims + values verbatim. The
+            # ``evidence_references`` projection lets the
+            # fabricated-ID check cross-reference the
+            # server-owned registry.
+            "structured_tool_envelopes": list(
+                getattr(gen, "structured_tool_envelopes", ()) or ()
+            )
+            if gen is not None
+            else [],
+            "evidence_references": list(
+                getattr(gen, "evidence_references", ()) or ()
+            )
+            if gen is not None
+            else [],
             "deterministic_services": list(
                 getattr(gen, "deterministic_services_used", ()) or ()
             )
@@ -282,7 +317,7 @@ class EvaluationRunner:
             body=body,
             generation=gen,
             production_path=True,
-            latency_ms=elapsed,
+            latency_ms=elapsed_ms,
             success=bool(body.strip()),
             notes=notes,
         )

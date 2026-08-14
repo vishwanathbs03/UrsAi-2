@@ -157,7 +157,13 @@ def _make_registry() -> EvidenceRegistry:
 
 
 def test_1_allowed_claim_types_exact_set():
-    """The 7 claim types are the only labels the validator accepts."""
+    """The 9 claim types are the only labels the validator accepts.
+
+    SPRINT AI-16 extended the vocabulary with INTERNAL_BUSINESS
+    and ASSUMPTION (in addition to the original 7). The 9-way
+    set is the canonical contract; renaming or removing any of
+    these labels would break the AI-16 claim-kind classifier.
+    """
     assert set(ALLOWED_CLAIM_TYPES) == {
         "FACT",
         "CALCULATION",
@@ -166,8 +172,11 @@ def test_1_allowed_claim_types_exact_set():
         "SCENARIO",
         "EXTERNAL_FACT",
         "UNKNOWN",
+        # SPRINT AI-16 — two new claim kinds.
+        "INTERNAL_BUSINESS",
+        "ASSUMPTION",
     }
-    assert len(ALLOWED_CLAIM_TYPES) == 7
+    assert len(ALLOWED_CLAIM_TYPES) == 9
 
 
 def test_2_allowed_calculation_sources_exact_set():

@@ -36,6 +36,14 @@ os.environ["JWT_SECRET_KEY"] = "test-secret-32-bytes-long-key-12345"
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.utils.database import Base, engine
+
+# Ensure the schema exists in ``atlas_ai.db`` so the in-process
+# FastAPI app can register/login/create/update without raising
+# ``no such table: users``. The conftest wipes the persisted
+# SQLite file before any test module is imported; this call
+# rebuilds the schema the test relies on.
+Base.metadata.create_all(bind=engine)
 
 
 def _basic(employee_count: int, description: str) -> dict:

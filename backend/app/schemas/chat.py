@@ -491,6 +491,280 @@ class ChatGenerationMeta(BaseModel):
     # without drilling into ``generation.*``.
     scenario_analysis: dict | None = None
 
+    # SPRINT AI-6 — Trust-first visual UI. The first 1-3
+    # sentences of the assistant's prose, server-extracted and
+    # ready for the frontend to render as the "Direct Answer"
+    # 10-second-read header. ``None`` when the assistant didn't
+    # produce extractable prose, or for legacy rows that
+    # pre-date AI-6; the frontend projector falls back to
+    # ``consultant.body`` / ``content`` in that case.
+    direct_answer: str | None = None
+
+    # SPRINT AI-7 — Missing-data intelligence. Structured list
+    # of ``MissingDataObject`` dicts the proactive detector
+    # (step 3.7 of ``ConversationService.append_message``) emits
+    # BEFORE the provider call. Each dict carries ``field``,
+    # ``importance``, ``reason``, ``affects``, ``suggested_source``.
+    # Default empty list so legacy rows that pre-date AI-7 still
+    # deserialize. The frontend ``MissingInfoCard`` renders the
+    # 4-section card when the list is non-empty.
+    missing_data: list[dict] = Field(default_factory=list)
+
+    # SPRINT AI-8 — Controlled Business Tool Router.
+    # Validated + sanitised + evidence-stamped results from
+    # the optional 2nd-turn tool-loop. Same shape and
+    # additive-compat default (``[]``) as the wire mirror
+    # on the outer ``ChatMessageOut``.
+    llm_tool_results: list[dict] = Field(default_factory=list)
+
+    # SPRINT AI-10 — Explain My Answer. Per-recommendation
+    # decision traces stamped on every assistant turn. The
+    # dict is shaped ``{recommendation_id:
+    # DecisionTrace.to_dict()}`` — six sections (evidence,
+    # calculations, decision_factors, assumptions,
+    # uncertainty, alternatives) plus confidence +
+    # confidence_label. ``None`` for legacy rows that pre-date
+    # AI-10; the deterministic fallback ALWAYS populates a
+    # trace per recommendation in the turn.
+    explanation: dict | None = None
+
+    # SPRINT AI-11 — Universal Business-Aware Assistant hardening.
+    # ``capability`` is the multi-label tuple describing what
+    # capabilities the prompt required (one or more of
+    # GENERAL_KNOWLEDGE / BUSINESS_FACT / BUSINESS_ANALYSIS /
+    # CALCULATION / RECOMMENDATION / SCENARIO / FORECAST /
+    # COMPARISON / FINANCIAL / OPERATIONAL / RISK /
+    # GOVERNMENT_SCHEME / EXPORT / ROADMAP /
+    # EXTERNAL_INFORMATION / MIXED / UNKNOWN).
+    # ``business_dependency`` is the three-valued literal
+    # ``"none"`` / ``"optional"`` / ``"required"``. Both default
+    # to safe empty list / ``"none"`` so every pre-AI-11 row
+    # deserialises unchanged. The field is appended at the END
+    # so legacy ``ChatGenerationMeta(**legacy_data)`` calls
+    # keep working.
+    capability: list[str] = Field(default_factory=list)
+    business_dependency: str = "none"
+
+    # SPRINT AI-12 — Universal Reasoning Layer wire projection.
+    # Five additive fields. All default-safe (``None`` / ``[]``)
+    # so legacy rows that pre-date AI-12 deserialize cleanly.
+    tool_plan: dict | None = None
+    """SPRINT AI-12 — :class:`ToolPlan.to_dict()` mirror.
+    Carries ``required`` / ``optional`` / ``parallelizable`` /
+    ``sequential`` / ``rationale``. ``None`` for legacy rows
+    that pre-date AI-12."""
+
+    evidence_requirements: dict | None = None
+    """SPRINT AI-12 — :class:`EvidenceRequirements.to_dict()`
+    mirror. Carries ``required`` / ``optional`` /
+    ``rationale``. ``None`` for legacy rows."""
+
+    contradiction_report: dict | None = None
+    """SPRINT AI-12 — :class:`ContradictionReport.to_dict()`
+    mirror. Carries ``severity`` (``none / low / medium /
+    high``), ``items`` (list of contradiction dicts), and
+    ``rationale``. ``None`` for legacy rows."""
+
+    answer_quality: dict | None = None
+    """SPRINT AI-12 — :class:`AnswerQuality.to_dict()` mirror.
+    Carries the 8 axis scores (relevance, evidence, numeric,
+    completeness, uncertainty, actionability, consistency,
+    format), ``total``, ``weakest_axis``, ``needs_retry``,
+    and ``rationale``. ``None`` for legacy rows."""
+
+    structured_tool_envelopes: list[dict] = Field(default_factory=list)
+    """SPRINT AI-12 — ``StructuredToolEnvelope.to_dict()``
+    mirror, one per tool the dispatcher invoked. Carries
+    ``tool_name``, ``metric``, ``value``, ``unit``, ``formula``,
+    ``input_evidence_ids``, ``calculation_id``, ``assumptions``,
+    ``limitations``. Empty list for legacy rows."""
+
+    answer_mode: str = "general_knowledge"
+    """SPRINT AI-12 — capability-aware shape signal. One of the
+    eight ``AnswerMode`` literals. Drives the frontend's
+    answer-shape renderer (capability-aware visual
+    follow-up, out of scope for AI-12)."""
+
+    # SPRINT AI-13 — Production Orchestration wire fields.
+    # All three are default-safe so legacy rows that pre-date
+    # AI-13 round-trip unchanged.
+    tool_execution_traces: list[dict] = Field(default_factory=list)
+    """SPRINT AI-13 — one ``ToolExecutionTrace.to_dict()`` per
+    executed tool. Each entry carries ``tool_name``,
+    ``selected``, ``executed``, ``success``, ``latency_ms``,
+    ``result_available``, ``evidence_ids``, ``failure_reason``,
+    ``error_category``. Empty list for legacy rows or kill-
+    switch-disabled paths."""
+
+    partial_failure_disclosure: str | None = None
+    """SPRINT AI-13 — one-line sentence the partial-failure
+    handler built. ``None`` when every tool succeeded. Drives
+    the inline disclosure block the assistant inserts into
+    the answer body."""
+
+    confidence_penalty: int = 0
+    """SPRINT AI-13 — integer 0..40 penalty the partial-failure
+    handler computed. ``0`` when every tool succeeded. Drives
+    the deterministic confidence reduction the UI surfaces."""
+
+    # SPRINT AI-14 — Universal Answer Intelligence + Evidence Graph.
+    # Six additive wire mirrors on ``ChatGenerationMeta`` so the
+    # frontend can render the AI-14 disclosure (hero direct answer,
+    # evidence graph, calculation lineage, missing-data state,
+    # unsupported-claim badge, fabricated-source count) without
+    # re-parsing the full ``grounded_payload``. All six are
+    # default-safe so legacy rows that pre-date AI-14 round-trip
+    # unchanged.
+    answer_requirements: dict | None = None
+    """SPRINT AI-14 — ``AnswerRequirements.to_dict()`` payload:
+    the 16-field dataclass describing what the final answer
+    needs (16 ``needs_*`` flags + requested entities / metrics /
+    time horizon / output format + rationale). Drives the
+    hero-direct-answer + max-3-supports composer on the
+    frontend. ``None`` for legacy rows."""
+
+    evidence_graph: dict | None = None
+    """SPRINT AI-14 — ``AnswerEvidenceGraph.to_dict()`` payload:
+    per-claim lineage with nodes (profile / tool / calc /
+    external / assumption), edges (supports / derived_from /
+    assumes / contradicts), claims, calculations, assumptions,
+    external sources, unsupported / fabricated counters, and
+    contradiction severity. ``None`` when the engine did not
+    run."""
+
+    calculation_lineage: list[dict] = Field(default_factory=list)
+    """SPRINT AI-14 — wire list of ``CalculationNode.to_dict()``
+    dicts, one per mintable envelope. Empty list when the
+    dispatcher ran no calc-capable tool. Each entry carries
+    ``calculation_id``, ``name``, ``inputs``, ``formula``,
+    ``output``, ``unit``, ``source_evidence_ids``,
+    ``tool_name``, ``confidence``."""
+
+    missing_data_state: dict | None = None
+    """SPRINT AI-14 — ``missing_data_state(...)`` dict of
+    {known, derived, estimated, unknown} claim buckets the
+    renderer reads for the "What I know / What I am missing"
+    disclosure. ``None`` when the engine did not run."""
+
+    unsupported_claim_count: int = 0
+    """SPRINT AI-14 — integer count of ClaimNodes the engine
+    flagged ``validation_status == "unsupported"``. Drives the
+    "Unsupported claim" badge on the trust bar. ``0`` for
+    legacy rows or deterministic-fallback short-circuit."""
+
+    fabricated_source_count: int = 0
+    """SPRINT AI-14 — integer count of ``ExternalSourceNode``
+    entries whose URL fails the URL guard (authority < 0.5 or
+    untrusted domain). ``0`` by default — the AI-14
+    ``_TRUSTED_URLS`` allow-list is deliberately empty."""
+
+    # SPRINT AI-15 — Intelligent Visualization + Trust-First UX.
+    # Three additive wire mirrors. ``visualization_plans`` powers
+    # the chart slots inside TrustFirstResponse (KPI /
+    # Progress / Comparison / Trend / Scenario / Risk /
+    # Composition / Readiness). ``quality_warning`` drives the
+    # concise low-quality warning strip the brief mandates.
+    # ``trust_summary`` powers the "Why this answer?" disclosure
+    # panel (Evidence / Calculations / Assumptions / Uncertainty
+    # / Alternatives). All default-safe so pre-AI-15 rows that
+    # pre-date this sprint round-trip unchanged.
+    visualization_plans: list[dict] = Field(default_factory=list)
+    """SPRINT AI-15 — mirror of
+    ``generation.visualization_plans``. List of
+    ``VisualizationPlan.to_dict()`` payloads. Empty when the
+    planner emits no plans; the renderer falls back to prose."""
+
+    quality_warning: dict | None = None
+    """SPRINT AI-15 — mirror of ``generation.quality_warning``.
+    ``{"needs_warning": bool, "warning_message": str}`` the
+    validator stamps. ``None`` for legacy rows."""
+
+    trust_summary: dict | None = None
+    """SPRINT AI-15 — mirror of ``generation.trust_summary``.
+    ``build_trust_summary(...)`` payload with the 5 disclosure
+    sections plus tools_used / tool_failures / confidence_change.
+    ``None`` when the engine did not compute one."""
+
+    # SPRINT AI-16 — Verified External Knowledge + Freshness Layer.
+    # Five additive wire mirrors for the AI-16 envelope. Each
+    # defaults to a safe empty / None so pre-AI-16 rows that
+    # pre-date this sprint round-trip unchanged.
+    external_claims: list[dict] = Field(default_factory=list)
+    """SPRINT AI-16 — mirror of ``generation.external_claims``.
+    List of ``ClassifiedClaim.to_dict()`` payloads the engine
+    produced. Each carries ``text``, ``kind``
+    (``external_fact`` / ``internal_business`` / ``calculated`` /
+    ``scenario`` / ``assumption`` / ``unknown``), ``authority``,
+    ``is_verified``, ``notes``, and a ``source`` dict with
+    provenance. Empty when no external claims were used."""
+
+    freshness_warnings: list[dict] = Field(default_factory=list)
+    """SPRINT AI-16 — mirror of
+    ``generation.freshness_warnings``. List of
+    ``ExternalSource.to_dict()`` payloads for sources whose
+    freshness is AGING / STALE / UNKNOWN. Empty when every
+    source is FRESH."""
+
+    scheme_card: dict | None = None
+    """SPRINT AI-16 — mirror of ``generation.scheme_card``.
+    ``SchemeAnswerCard.to_dict()`` payload with the 10
+    brief-mandated fields (official_name, authority, benefit,
+    eligibility, documents, application_link, last_verified,
+    match_reason, missing_info, final_authority_disclaimer).
+    ``None`` for non-scheme prompts."""
+
+    external_answer: dict | None = None
+    """SPRINT AI-16 — mirror of ``generation.external_answer``.
+    ``ExternalAnswerEnvelope.to_dict()`` payload for concise
+    definition-style replies. ``None`` for prompts that the
+    full 10-section consultant format serves better."""
+
+    mixed_answer: dict | None = None
+    """SPRINT AI-16 — mirror of ``generation.mixed_answer``.
+    ``MixedAnswerBlocks`` payload with the four blocks
+    (external / business / gap / conclusion) the
+    :class:`MixedQuestionSeparator` emits. ``None`` when the
+    question was not mixed."""
+
+    # SPRINT AI-17 — Bounded Quality Repair + Claim Lifecycle.
+    # Eight additive wire mirrors. Default to safe
+    # (empty / None / False) so legacy rows deserialize
+    # unchanged.
+    failure_classification: str = "none"
+    """SPRINT AI-17 — mirror of ``generation.failure_classification``.
+    One of the nine
+    :data:`app.services.ai.knowledge.ai17_quality_failure_classifier.FAILURE_CLASSES`.
+    ``"none"`` for legacy rows."""
+
+    repair_applied: list[str] = Field(default_factory=list)
+    """SPRINT AI-17 — mirror of ``generation.repair_applied``.
+    List of repair names the deterministic repair dispatcher
+    ran. Empty when no repair was needed."""
+
+    retry_attempted: bool = False
+    """SPRINT AI-17 — mirror of ``generation.retry_attempted``.
+    ``True`` when the bounded retry gate fired the (single,
+    terminal) retry. ``False`` for legacy rows."""
+
+    retry_succeeded: bool | None = None
+    """SPRINT AI-17 — mirror of ``generation.retry_succeeded``.
+    Outcome of the retry. ``None`` when ``retry_attempted``
+    is ``False``."""
+
+    numeric_corrections: list[dict] = Field(default_factory=list)
+    """SPRINT AI-17 — mirror of ``generation.numeric_corrections``.
+    List of :class:`NumericCorrectionAudit.to_dict()` rows.
+    Empty when no numeric corrections were made."""
+
+    claim_lifecycle: dict | None = None
+    """SPRINT AI-17 — mirror of ``generation.claim_lifecycle``.
+    :meth:`ClaimLifecycleStore.to_dict()` payload from the
+    AI-17 repair pass. ``None`` for legacy rows."""
+
+    bounded_repair_version: str = ""
+    """SPRINT AI-17 — schema version of the AI-17 pipeline.
+    Empty when the module did not run."""
+
 
 # --------------------------------------------------------------------------- #
 # Messages
@@ -708,6 +982,279 @@ class ChatMessageOut(BaseModel):
     the deterministic fallback for "what if" prompts ALWAYS
     populates it. Carries ``extra="forbid"`` so no unknown
     fields surface on the wire."""
+
+    direct_answer: str | None = None
+    """SPRINT AI-6 — Trust-first visual UI. The first 1-3
+    sentences of the assistant's prose, server-extracted and
+    ready for the frontend to render as the "Direct Answer"
+    10-second-read header. ``None`` when the assistant didn't
+    produce extractable prose, or for legacy rows that
+    pre-date AI-6; the frontend projector falls back to
+    ``consultant.body`` / ``content`` in that case. Mirrors
+    ``generation.direct_answer`` so the frontend can read it
+    without parsing the structured envelope."""
+
+    missing_data: list[dict] = Field(default_factory=list)
+    """SPRINT AI-7 — Missing-data intelligence. Structured list
+    of ``MissingDataObject`` dicts the proactive detector surfaces
+    BEFORE the provider call. Each dict carries ``field``,
+    ``importance`` (``LOW | MEDIUM | HIGH``), ``reason``,
+    ``affects`` (list[str]), ``suggested_source``. The frontend
+    ``MissingInfoCard`` renders the 4-section "What I can tell /
+    What I am missing / Why it matters / Next step" layout when
+    the list is non-empty. Default empty list so legacy rows that
+    pre-date AI-7 still deserialize; the AI-6 prose
+    ``MissingInfoBody`` fallback renders unchanged in that case."""
+
+    llm_tool_results: list[dict] = Field(default_factory=list)
+    """SPRINT AI-8 — Controlled Business Tool Router. Validated
+    + sanitised + evidence-stamped results from the optional
+    2nd-turn tool-loop. Each dict carries ``tool`` (whitelist
+    name), ``status`` (``"ok" | "skipped" | "error"``),
+    ``evidence_ids`` (list[str]), ``payload`` (dict),
+    ``duration_ms`` (int), ``error`` (str | None). Empty list
+    when the LLM did NOT request any tools (legacy rows +
+    first-turn LLMs that never emit ``tool_calls``); the
+    frontend ``ReasoningTrace`` falls back to the existing
+    rendering. Field appended at the END to preserve the
+    additive-compat pattern of every AI-N sprint."""
+
+    llm_tool_results: list[dict] = Field(default_factory=list)
+    """SPRINT AI-8 — Controlled Business Tool Router. Validated
+    + sanitised + evidence-stamped tool-loop results from the
+    optional 2nd-turn provider call. Each dict carries
+    ``tool`` (whitelist name), ``status`` (``"ok" | "skipped"
+    | "error"``), ``evidence_ids`` (list[str]), ``payload``
+    (dict), ``duration_ms`` (int), ``error`` (str | None). Empty
+    list when the LLM did NOT request any tools (legacy rows
+    + first-turn LLMs that never emit ``tool_calls``); the
+    frontend ``ReasoningTrace`` falls back to the existing
+    rendering. Field appended at the END to preserve the
+    additive-compat pattern of every AI-N sprint."""
+
+    explanation: dict | None = None
+    """SPRINT AI-10 — Explain My Answer. Top-level mirror of
+    ``generation.explanation`` — per-recommendation decision
+    traces keyed by ``recommendation_id``. Each value is a
+    dict with six sections (evidence, calculations,
+    decision_factors, assumptions, uncertainty,
+    alternatives) plus confidence + confidence_label.
+    ``None`` for legacy rows that pre-date AI-10; the
+    frontend ``ExplanationPanel`` reads this field
+    directly. Trace strings are derived from structured
+    provenance metadata — no LLM chain-of-thought is
+    ever exposed."""
+
+    capability: list[str] = Field(default_factory=list)
+    """SPRINT AI-11 — Universal Business-Aware Assistant
+    hardening. Top-level mirror of
+    ``generation.capability``. Multi-label tuple describing
+    what capabilities the prompt required. Defaults to an
+    empty list so every pre-AI-11 row deserialises
+    unchanged. Field appended at the END to preserve the
+    additive-compat pattern of every AI-N sprint."""
+
+    business_dependency: str = "none"
+    """SPRINT AI-11 — Top-level mirror of
+    ``generation.business_dependency``. Three-valued
+    literal — one of ``"none"`` / ``"optional"`` /
+    ``"required"``. Defaults to ``"none"`` so every
+    pre-AI-11 row deserialises unchanged. Field appended at
+    the END to preserve the additive-compat pattern of every
+    AI-N sprint."""
+
+    # SPRINT AI-12 — Universal Reasoning Layer wire mirrors.
+    # Each field is a flat mirror of the matching
+    # ``generation.*`` value so the frontend can render the
+    # universal-reasoning audit without parsing the structured
+    # envelope. All default to safe empties.
+    tool_plan: dict | None = None
+    """SPRINT AI-12 — top-level mirror of ``generation.tool_plan``.
+    Carries ``required`` / ``optional`` / ``parallelizable`` /
+    ``sequential`` / ``rationale``. ``None`` for legacy rows
+    that pre-date AI-12."""
+
+    evidence_requirements: dict | None = None
+    """SPRINT AI-12 — top-level mirror of
+    ``generation.evidence_requirements``. Carries
+    ``required`` / ``optional`` / ``rationale``. ``None`` for
+    legacy rows."""
+
+    contradiction_report: dict | None = None
+    """SPRINT AI-12 — top-level mirror of
+    ``generation.contradiction_report``. Carries
+    ``severity`` / ``items`` / ``rationale``. ``None`` for
+    legacy rows."""
+
+    answer_quality: dict | None = None
+    """SPRINT AI-12 — top-level mirror of
+    ``generation.answer_quality``. Carries the 8 axis scores,
+    ``total``, ``weakest_axis``, ``needs_retry``. ``None``
+    for legacy rows."""
+
+    structured_tool_envelopes: list[dict] = Field(default_factory=list)
+    """SPRINT AI-12 — top-level mirror of
+    ``generation.structured_tool_envelopes``. Empty list for
+    legacy rows."""
+
+    answer_mode: str = "general_knowledge"
+    """SPRINT AI-12 — top-level mirror of
+    ``generation.answer_mode``. The capability-aware shape
+    signal. Default ``"general_knowledge"`` keeps legacy
+    rows valid."""
+
+    # SPRINT AI-13 — top-level mirrors of the AI-13 wire
+    # fields. All default-safe so legacy rows that pre-date
+    # AI-13 round-trip unchanged.
+    tool_execution_traces: list[dict] = Field(default_factory=list)
+    """SPRINT AI-13 — top-level mirror of
+    ``generation.tool_execution_traces``. One trace per
+    executed tool. Empty list for legacy rows."""
+
+    partial_failure_disclosure: str | None = None
+    """SPRINT AI-13 — top-level mirror of
+    ``generation.partial_failure_disclosure``. The one-line
+    sentence the partial-failure handler built. ``None``
+    when every tool succeeded."""
+
+    confidence_penalty: int = 0
+    """SPRINT AI-13 — top-level mirror of
+    ``generation.confidence_penalty``. Integer 0..40
+    deterministic penalty from the partial-failure handler."""
+
+    # SPRINT AI-14 — Universal Answer Intelligence + Evidence
+    # Graph. The envelope exposes 6 additive wire mirrors so the
+    # frontend can render the trust bar + lineage disclosure in
+    # a single TypeScript destructure. The first two
+    # (``answer_requirements`` + ``evidence_graph``) are the
+    # largest JSON shapes (16-field + multi-tuple dataclasses)
+    # so they live at the top level; the remaining four are
+    # short scalars/lists so they sit alongside the legacy
+    # AI-13 top-level mirrors. All default-safe so legacy rows
+    # that pre-date AI-14 round-trip unchanged.
+    answer_requirements: dict | None = None
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.answer_requirements``. ``AnswerRequirements
+    .to_dict()`` payload. Drives the dynamic answer composer
+    + hero-direct-answer + max-3-supports UX. ``None`` for
+    legacy rows."""
+
+    evidence_graph: dict | None = None
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.evidence_graph``. ``AnswerEvidenceGraph
+    .to_dict()`` payload. Powers the per-claim lineage
+    disclosure + evidence-graph summary the frontend renders
+    inside the existing technical-provenance panel. ``None``
+    when the engine did not run."""
+
+    calculation_lineage: list[dict] = Field(default_factory=list)
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.calculation_lineage``. Per-envelope
+    ``CalculationNode.to_dict()`` payloads (inputs / formula /
+    output / unit / source / calculation_id). Empty list for
+    legacy rows or non-calculation prompts."""
+
+    missing_data_state: dict | None = None
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.missing_data_state``. Buckets the graph's
+    claims into ``{known, derived, estimated, unknown}`` so the
+    frontend can render an honest "what I am missing" panel.
+    ``None`` when the engine did not compute one."""
+
+    unsupported_claim_count: int = 0
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.unsupported_claim_count``. Integer count of
+    claims the engine could not validate against the evidence
+    graph. ``0`` for legacy rows and for fully-grounded
+    responses."""
+
+    fabricated_source_count: int = 0
+    """SPRINT AI-14 — top-level mirror of
+    ``generation.fabricated_source_count``. Integer count of
+    external-source nodes that failed the URL-guard heuristic
+    (authority < 0.5 or unregistered URL). ``0`` for legacy
+    rows and for canonical sources."""
+
+    # SPRINT AI-15 — three top-level mirrors of the AI-15 wire
+    # envelope. ``visualization_plans`` powers the chart slots
+    # inside TrustFirstResponse. ``quality_warning`` powers the
+    # concise low-quality warning strip. ``trust_summary``
+    # powers the "Why this answer?" disclosure panel. All
+    # default-safe so pre-AI-15 rows that pre-date this sprint
+    # round-trip unchanged.
+    visualization_plans: list[dict] = Field(default_factory=list)
+    """SPRINT AI-15 — top-level mirror of
+    ``generation.visualization_plans``. List of
+    ``VisualizationPlan.to_dict()`` payloads. Empty when the
+    planner emits no plans; the renderer falls back to prose."""
+
+    quality_warning: dict | None = None
+    """SPRINT AI-15 — top-level mirror of
+    ``generation.quality_warning``. Drives the concise
+    low-quality warning strip the brief mandates (``None`` for
+    legacy rows)."""
+
+    trust_summary: dict | None = None
+    """SPRINT AI-15 — top-level mirror of
+    ``generation.trust_summary``. Powers the "Why this
+    answer?" disclosure panel. ``None`` for legacy rows."""
+
+    # SPRINT AI-16 — top-level mirrors of the AI-16 envelope.
+    # Default-safe so legacy rows deserialize unchanged.
+    external_claims: list[dict] = Field(default_factory=list)
+    """SPRINT AI-16 — top-level mirror of
+    ``generation.external_claims``. List of
+    ``ClassifiedClaim.to_dict()`` payloads."""
+
+    freshness_warnings: list[dict] = Field(default_factory=list)
+    """SPRINT AI-16 — top-level mirror of
+    ``generation.freshness_warnings``. List of AGING / STALE /
+    UNKNOWN external sources."""
+
+    scheme_card: dict | None = None
+    """SPRINT AI-16 — top-level mirror of
+    ``generation.scheme_card``. ``SchemeAnswerCard.to_dict()``
+    payload."""
+
+    external_answer: dict | None = None
+    """SPRINT AI-16 — top-level mirror of
+    ``generation.external_answer``.
+    ``ExternalAnswerEnvelope.to_dict()`` payload."""
+
+    mixed_answer: dict | None = None
+    """SPRINT AI-16 — top-level mirror of
+    ``generation.mixed_answer``. ``MixedAnswerBlocks`` payload
+    for mixed questions."""
+
+    # SPRINT AI-17 — top-level mirrors of the AI-17 envelope.
+    # Default-safe so legacy rows deserialize unchanged.
+    failure_classification: str = "none"
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.failure_classification``."""
+
+    repair_applied: list[str] = Field(default_factory=list)
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.repair_applied``."""
+
+    retry_attempted: bool = False
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.retry_attempted``."""
+
+    retry_succeeded: bool | None = None
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.retry_succeeded``."""
+
+    numeric_corrections: list[dict] = Field(default_factory=list)
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.numeric_corrections``."""
+
+    claim_lifecycle: dict | None = None
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.claim_lifecycle``."""
+
+    bounded_repair_version: str = ""
+    """SPRINT AI-17 — top-level mirror of
+    ``generation.bounded_repair_version``."""
 
 
 # --------------------------------------------------------------------------- #

@@ -4,17 +4,22 @@
  * DownloadPdfButton — the real PDF download mechanism for the
  * Executive Report.
  *
- * Approach: build a self-contained, print-styled HTML document
- * from the live report data, open it in a new window, and
- * trigger `window.print()`. The browser's print dialog offers
- * "Save as PDF" as a destination, which is the standard
- * zero-dep way to produce a real PDF file the user can keep.
+ * Approach:
+ *  1. Try the server-side route first —
+ *     `GET /api/v1/reports/pdf?report_type=executive` returns a
+ *     real PDF (ReportLab on the backend). If that succeeds,
+ *     download the blob directly.
+ *  2. Fall back to the print path — build a self-contained,
+ *     print-styled HTML document from the live report data,
+ *     open it in a new window, and trigger `window.print()`.
+ *     The browser's print dialog offers "Save as PDF" as a
+ *     destination.
  *
- * Why not a server-side PDF endpoint? The backend has no PDF
- * route and the user explicitly required no backend changes.
- * Why not `jsPDF` / `html2canvas`? Adding a 1MB+ dep for a
- * print-to-PDF use case is not proportionate. The browser
- * print dialog is the canonical, OS-supported PDF export.
+ * Why a print fallback? If the server-side endpoint is degraded
+ * (network blip, server overload), the user still gets a real
+ * PDF via the browser's native print stack — no broken
+ * downloads. Why not `jsPDF` / `html2canvas`? Adding a 1MB+ dep
+ * for a print-to-PDF use case is not proportionate.
  */
 
 import { useCallback, useState } from "react";

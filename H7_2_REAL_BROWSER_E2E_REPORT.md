@@ -224,7 +224,7 @@ For local development:
 
 ```bash
 # Terminal 1
-cd backend && uvicorn app.main:app --port 8001 --reload
+cd backend && uvicorn app.main:app --port 8090 --reload
 
 # Terminal 2
 cd frontend && npm run dev

@@ -12,7 +12,7 @@ import { useEffect, useRef } from "react";
 import { ArrowRight, LineChart, ListChecks, Map, Plus, Sparkles } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import { cn } from "@/lib/utils";
-import type { Conversation } from "./types";
+import type { AssistantContext, Conversation } from "./types";
 
 interface ConversationListProps {
   conversation: Conversation;
@@ -24,6 +24,10 @@ interface ConversationListProps {
   memoryTopics?: string[];
   /** Called when the user clicks a smart follow-up chip. */
   onFollowUp?: (label: string) => void;
+  /** Optional AssistantContext snapshot — propagated to each
+   *  MessageBubble so the AI-6 TrustFirstResponse shell can
+   *  surface concrete evidence values. */
+  context?: AssistantContext | null;
 }
 
 export function ConversationList({
@@ -32,6 +36,7 @@ export function ConversationList({
   hasMessages,
   memoryTopics,
   onFollowUp,
+  context,
 }: ConversationListProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -118,6 +123,7 @@ export function ConversationList({
           message={m}
           memoryTopics={memoryTopics}
           onFollowUp={onFollowUp}
+          context={context ?? null}
         />
       ))}
       {isThinking && <ThinkingIndicator />}

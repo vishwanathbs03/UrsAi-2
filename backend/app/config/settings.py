@@ -46,7 +46,7 @@ class Settings(BaseSettings):
         return "1.0.0"
 
     app_host: str = "0.0.0.0"
-    app_port: int = 8000
+    app_port: int = 8001
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
@@ -70,7 +70,17 @@ class Settings(BaseSettings):
 
     # OpenAI-compatible / Gemini provider layer configuration
     ai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    ai_model: str = "gemini-3.6-flash"
+    # H7.9R+ — Gemini model family. The previous default was
+    # ``gemini-3.6-flash`` which is not a real Google model; the
+    # factory would therefore mark the upstream as "configured"
+    # while every chat call failed with 404. The current Google
+    # Gemini family on the OpenAI-compatible endpoint is
+    # ``gemini-1.5-flash`` (stable, longest track record) and
+    # ``gemini-2.0-flash`` / ``gemini-2.5-flash`` (newer). The
+    # committed default is ``gemini-1.5-flash`` — change this in
+    # ``.env`` (or the deployment's secret manager) for newer
+    # models, never in code paths that ship binaries.
+    ai_model: str = "gemini-1.5-flash"
     ai_request_timeout_seconds: float = 60.0
 
     ai_require_schema: bool = True

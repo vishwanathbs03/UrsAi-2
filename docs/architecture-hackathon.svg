@@ -177,7 +177,7 @@
   <text x="55" y="722" class="sub">• Docker Compose: nginx + backend + frontend + prometheus + grafana</text>
   <text x="55" y="738" class="sub">• Health: /api/v1/health/live (process) and /api/v1/health/ready (DB + knowledge + AI + migrations)</text>
   <text x="55" y="754" class="sub">• Versioned migration: 20260101_0005</text>
-  <text x="55" y="770" class="sub">• Native run: uvicorn :8001 + next dev :3000</text>
+  <text x="55" y="770" class="sub">• Native run: uvicorn :8090 + next dev :3000</text>
   <text x="55" y="786" class="sub">• See docs/DEPLOYMENT_HACKATHON.md for the minimum-risk deployment guide.</text>
 
   <!-- Legend -->

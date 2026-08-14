@@ -16,6 +16,7 @@
  */
 
 import { apiClient, ApiError } from "./api-client";
+import type { LLMToolResult, MissingDataObject } from "@/features/assistant/types";
 
 export interface ChatSource {
   topic: string;
@@ -41,6 +42,99 @@ export interface ChatGenerationMeta {
   prompt_truncated: boolean;
   provider_latency_ms: number | null;
   grounded_payload?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-11 — Universal Business-Aware Assistant hardening.
+   * Multi-label classification of what capabilities the
+   * prompt requires (general knowledge / business fact /
+   * calculation / scenario / risk / etc.). Frontend may
+   * surface this as an icon row in the trust badge.
+   */
+  capability?: string[];
+  /**
+   * Sprint AI-11 — whether the prompt requires the business
+   * profile (none / optional / required). Frontend may use
+   * this to switch the trust badge shape.
+   */
+  business_dependency?: "none" | "optional" | "required";
+  /**
+   * Sprint AI-12 — Universal Reasoning Layer. The AI-12
+   * ToolPlan payload (required/optional/parallelizable/
+   * sequential + rationale). Frontend may render this in a
+   * collapsible "Reasoning plan" disclosure.
+   */
+  tool_plan?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-12 — structured envelopes per executed tool.
+   * Each entry is the JSON-serialised shape of
+   * StructuredToolEnvelope (tool_name, metric, value, unit,
+   * formula, input_evidence_ids, calculation_id, assumptions,
+   * limitations, raw_payload).
+   */
+  structured_tool_envelopes?: Record<string, unknown>[];
+  /**
+   * Sprint AI-12 — EvidenceRequirements the planner emitted
+   * (profile / analytics / kpi_history / etc.).
+   */
+  evidence_requirements?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-12 — ContradictionReport the detector emitted
+   * (severity + per-conflict records). null when no
+   * contradiction was detected.
+   */
+  contradiction_report?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-12 — AnswerQuality the validator emitted
+   * (8-axis 0..10 score + needs_retry). null when the
+   * validator did not run (deterministic-fallback path).
+   */
+  answer_quality?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-12 — the answer shell literal the composer
+   * chose (general_knowledge / business_analysis / calculation
+   * / scenario / comparison / scheme / external / mixed).
+   */
+  answer_mode?: string;
+  /**
+   * Sprint AI-13 — per-tool execution trace records. Each
+   * entry is the JSON-serialised shape of ToolExecutionTrace
+   * (tool_name, selected, executed, success, latency_ms,
+   * result_available, evidence_ids, failure_reason,
+   * error_category). Empty array when no tools ran.
+   */
+  tool_execution_traces?: Record<string, unknown>[];
+  /**
+   * Sprint AI-13 — one-line sentence describing which tools
+   * failed (e.g. ``"predictive_sprint14 timed out, so the
+   * predictive_sprint14 portion could not be verified"``).
+   * null when every tool succeeded.
+   */
+  partial_failure_disclosure?: string | null;
+  /**
+   * Sprint AI-13 — integer 0..40 confidence penalty the
+   * partial-failure handler computed. 0 when every tool
+   * succeeded. The frontend's trust badge uses this to
+   * downgrade the label when > 0.
+   */
+  confidence_penalty?: number;
+  /**
+   * Sprint AI-14 — AnswerRequirements.to_dict() payload.
+   * 16-field dataclass describing what the answer needs.
+   */
+  answer_requirements?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-14 — AnswerEvidenceGraph.to_dict() payload.
+   * Per-claim lineage (nodes / edges / claims / calculations
+   * / assumptions / external sources + counters + severity).
+   */
+  evidence_graph?: Record<string, unknown> | null;
+  /** Sprint AI-14 — CalculationNode.to_dict() list. */
+  calculation_lineage?: Record<string, unknown>[];
+  /** Sprint AI-14 — {known, derived, estimated, unknown} dict. */
+  missing_data_state?: Record<string, unknown> | null;
+  /** Sprint AI-14 — count of unsupported ClaimNodes. */
+  unsupported_claim_count?: number;
+  /** Sprint AI-14 — count of fabricated ExternalSourceNodes. */
+  fabricated_source_count?: number;
 }
 
 export interface ChatProviderStatus {
@@ -80,6 +174,96 @@ export interface ChatMessageOut {
    * TrustMeta disclosure panel.
    */
   generation?: ChatGenerationMeta | null;
+  /**
+   * Sprint AI-5 — Business Scenario Copilot envelope.
+   * Present when the assistant turn answered a "what if"
+   * prompt. The ScenarioAnalysisCard renders this as a
+   * top-level card above the body.
+   */
+  scenario_analysis?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-6 — Trust-first visual UI. Server-stamped
+   * first 1-3 sentences from the assistant's full prose.
+   * The TrustFirstResponse shell renders this as the
+   * 10-second read at the top of every assistant message.
+   */
+  direct_answer?: string | null;
+  /**
+   * Sprint AI-7 — Missing-data intelligence. Structured list
+   * of ``MissingDataObject`` rows the proactive detector +
+   * reactive enrichment pass emitted. The ``MissingInfoCard``
+   * reads this top-level field directly; absent / empty
+   * triggers the AI-6 prose fallback path.
+   */
+  missing_data?: MissingDataObject[];
+  /**
+   * Sprint AI-8 — Controlled Business Tool Router. The
+   * sanitised, server-stamped results of the 2-turn LLM tool
+   * loop. One entry per whitelisted tool the LLM REQUESTED.
+   * The technical-provenance disclosure inside
+   * ``TrustFirstResponse`` renders a "Used tools" pill row
+   * when this list is non-empty. Absent / empty list
+   * (legacy rows + intents that did not trigger the tool
+   * loop) renders nothing.
+   */
+  llm_tool_results?: LLMToolResult[];
+  /**
+   * Sprint AI-13 — top-level mirror of
+   * ``generation.tool_execution_traces``. The MessageBubble
+   * may render this as a "Tools consulted" disclosure row
+   * without having to descend into the ``generation``
+   * envelope. Empty array when no tools ran or the
+   * kill-switch is off.
+   */
+  tool_execution_traces?: Record<string, unknown>[];
+  /**
+   * Sprint AI-13 — top-level mirror of
+   * ``generation.partial_failure_disclosure``. The trust
+   * badge uses this to surface a one-line "partial answer"
+   * indicator when at least one tool failed. null when
+   * every tool succeeded.
+   */
+  partial_failure_disclosure?: string | null;
+  /**
+   * Sprint AI-13 — top-level mirror of
+   * ``generation.confidence_penalty``. The trust badge may
+   * downgrade its label when this is > 0.
+   */
+  confidence_penalty?: number;
+  /**
+   * Sprint AI-14 — top-level mirror of
+   * ``generation.answer_requirements``. Drives the dynamic
+   * answer composer + hero-direct-answer + max-3-supports UX.
+   */
+  answer_requirements?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-14 — top-level mirror of
+   * ``generation.evidence_graph``. Powers the per-claim lineage
+   * disclosure + evidence-graph summary inside the existing
+   * technical-provenance panel.
+   */
+  evidence_graph?: Record<string, unknown> | null;
+  /**
+   * Sprint AI-15 — top-level mirror of
+   * ``generation.visualization_plans``. Each entry carries
+   * the server-owned chart kind + title + provenance.
+   */
+  visualization_plans?: Record<string, unknown>[];
+  /**
+   * Sprint AI-15 — top-level mirror of
+   * ``generation.quality_warning``. Drives the low-quality
+   * warning strip.
+   */
+  quality_warning?: {
+    needs_warning?: boolean;
+    warning_message?: string;
+  } | null;
+  /**
+   * Sprint AI-15 — top-level mirror of
+   * ``generation.trust_summary``. Powers the "Why this
+   * answer?" disclosure panel.
+   */
+  trust_summary?: Record<string, unknown> | null;
 }
 
 export interface ChatSessionSummary {
