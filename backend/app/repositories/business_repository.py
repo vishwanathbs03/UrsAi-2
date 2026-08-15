@@ -62,6 +62,7 @@ class BusinessRepository:
 
     def __init__(self, db: Session) -> None:
         self._db = db
+        self._owner_cache: dict[int, Business | None] = {}
 
     # ---- Read ----------------------------------------------------------
 
@@ -69,22 +70,29 @@ class BusinessRepository:
         """Return the single business belonging to ``owner_id`` with
         every nested collection eagerly loaded, or ``None`` if the
         user has not created one yet.
-
-        ``populate_existing`` forces SQLAlchemy to overwrite the
-        cached relationship state on the in-session Business with a
-        fresh read from the database. This is the contract callers
-        rely on after a ``commit()`` — the post-commit read must be
-        byte-identical to a follow-up GET.
         """
+        if owner_id in self._owner_cache:
+            return self._owner_cache[owner_id]
+
         stmt = (
             select(Business)
             .where(Business.owner_id == owner_id)
             .options(*_FULL_LOAD)
             .execution_options(populate_existing=True)
         )
-        return self._db.scalar(stmt)
+        res = self._db.scalar(stmt)
+        self._owner_cache[owner_id] = res
+        return res
+
+    def invalidate_cache(self, owner_id: int | None = None) -> None:
+        if owner_id is not None:
+            self._owner_cache.pop(owner_id, None)
+        else:
+            self._owner_cache.clear()
 
     def exists_for_owner(self, owner_id: int) -> bool:
+        if owner_id in self._owner_cache and self._owner_cache[owner_id] is not None:
+            return True
         stmt = select(Business.id).where(Business.owner_id == owner_id)
         return self._db.scalar(stmt) is not None
 
