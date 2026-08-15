@@ -125,35 +125,57 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
     # service against the same BusinessRepository so every
     # read sees the same database state.
     decision_svc = AIDecisionService(repo)
+    _cached_twin: dict[int, Any] = {}
 
     def twin_provider(owner_id: int):
-        return TwinService(repo).compute(owner_id)
+        if owner_id not in _cached_twin:
+            _cached_twin[owner_id] = TwinService(repo).compute(owner_id)
+        return _cached_twin[owner_id]
 
     def recommendations_provider(owner_id: int):
+        try:
+            twin = twin_provider(owner_id)
+            recs = twin.get("snapshot", {}).get("recommendations")
+            if recs:
+                return recs
+        except Exception:
+            pass
         return RecommendationService(repo).compute(owner_id)
 
     def roadmap_provider(owner_id: int):
+        try:
+            twin = twin_provider(owner_id)
+            roadmap = twin.get("snapshot", {}).get("roadmap")
+            if roadmap:
+                return roadmap
+        except Exception:
+            pass
         return RoadmapService(repo).compute(owner_id)
 
     def rules_provider(owner_id: int):
+        try:
+            twin = twin_provider(owner_id)
+            rules = twin.get("snapshot", {}).get("rules")
+            if rules:
+                return rules
+        except Exception:
+            pass
         return RuleEngineService(repo).compute(owner_id)
 
     def insights_provider(owner_id: int):
         try:
+            twin = twin_provider(owner_id)
+            insights = twin.get("snapshot", {}).get("intelligence", {}).get("insights")
+            if insights is not None:
+                return {"generated_at": twin.get("generated_at"), "decision": {"insights": insights}}
+        except Exception:
+            pass
+        try:
             return decision_svc.compute(owner_id)
         except BusinessNotFound:
-            # AI Decision can legitimately have no output yet
-            # for a brand-new business. Return an empty
-            # decision so the assistant context builder does
-            # not crash.
             return {"generated_at": None, "decision": {"insights": []}}
 
     def profile_provider(owner_id: int):
-        # H7.8C — surface the owner's annual_revenue so the
-        # evidence registry can anchor the user's prompt
-        # revenue figure (e.g. "₹1.8 Cr to ₹3 Cr"). Returned
-        # shape matches ``_annual_revenue_inr``'s contract:
-        # ``{"annual_revenue": float, "revenue_currency": str}``.
         business = repo.get_by_owner(owner_id)
         if business is None:
             return {}
