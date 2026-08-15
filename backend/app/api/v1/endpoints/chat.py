@@ -127,14 +127,25 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
     decision_svc = AIDecisionService(repo)
     _cached_twin: dict[int, Any] = {}
 
-    def twin_provider(owner_id: int):
+    def _get_twin_dict(owner_id: int) -> dict[str, Any]:
         if owner_id not in _cached_twin:
-            _cached_twin[owner_id] = TwinService(repo).compute(owner_id)
+            raw = TwinService(repo).compute(owner_id)
+            if hasattr(raw, "model_dump"):
+                _cached_twin[owner_id] = raw.model_dump()
+            elif hasattr(raw, "dict"):
+                _cached_twin[owner_id] = raw.dict()
+            elif isinstance(raw, dict):
+                _cached_twin[owner_id] = raw
+            else:
+                _cached_twin[owner_id] = dict(raw)
         return _cached_twin[owner_id]
+
+    def twin_provider(owner_id: int):
+        return _get_twin_dict(owner_id)
 
     def recommendations_provider(owner_id: int):
         try:
-            twin = twin_provider(owner_id)
+            twin = _get_twin_dict(owner_id)
             recs = twin.get("snapshot", {}).get("recommendations")
             if recs:
                 return recs
@@ -144,7 +155,7 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
 
     def roadmap_provider(owner_id: int):
         try:
-            twin = twin_provider(owner_id)
+            twin = _get_twin_dict(owner_id)
             roadmap = twin.get("snapshot", {}).get("roadmap")
             if roadmap:
                 return roadmap
@@ -154,7 +165,7 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
 
     def rules_provider(owner_id: int):
         try:
-            twin = twin_provider(owner_id)
+            twin = _get_twin_dict(owner_id)
             rules = twin.get("snapshot", {}).get("rules")
             if rules:
                 return rules
@@ -164,7 +175,7 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
 
     def insights_provider(owner_id: int):
         try:
-            twin = twin_provider(owner_id)
+            twin = _get_twin_dict(owner_id)
             insights = twin.get("snapshot", {}).get("intelligence", {}).get("insights")
             if insights is not None:
                 return {"generated_at": twin.get("generated_at"), "decision": {"insights": insights}}
