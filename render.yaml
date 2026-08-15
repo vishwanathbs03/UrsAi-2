@@ -62,12 +62,14 @@ services:
         value: https://generativelanguage.googleapis.com/v1beta/openai/
       - key: AI_MODEL
         value: gemini-2.0-flash
+      - key: AI_REQUIRE_SCHEMA
+        value: "true"
       - key: AI_API_KEY
         sync: false
       - key: AI_REQUEST_TIMEOUT_SECONDS
-        value: "60"
+        value: "20.0"
       - key: AI_HARD_CALL_TIMEOUT_SECONDS
-        value: "150"
+        value: "25.0"
       - key: LOG_LEVEL
         value: INFO
       - key: TRUSTED_PROXY_HOPS
