@@ -57,7 +57,7 @@ services:
       - key: RATE_LIMIT_ENABLED
         value: "true"
       - key: AI_PROVIDER
-        value: openai_compatible
+        value: placeholder
       - key: AI_BASE_URL
         value: https://generativelanguage.googleapis.com/v1beta/openai/
       - key: AI_MODEL
