@@ -22,6 +22,11 @@ email-validator==2.2.0
 # missing-dep failures.
 python-multipart==0.0.20
 
+# --- PDF Reports (Sprint 13.2) ---
+reportlab==4.2.5
+Pillow==10.4.0
+cryptography==43.0.3
+
 # --- Monitoring (Sprint 8 Part 2) ---
 # Prometheus client library. The backend exposes request / latency /
 # status-code metrics on /metrics. This is the only new runtime
