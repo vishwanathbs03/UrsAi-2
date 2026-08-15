@@ -41,13 +41,16 @@ function cleanUrl(url: string): string {
 }
 
 export const env: EnvShape = {
-  // If NEXT_PUBLIC_API_URL is explicitly set (e.g. for SSR or Docker),
-  // use it. Otherwise use empty string for browser-safe relative URLs.
-  apiBaseUrl: process.env.NEXT_PUBLIC_API_URL
-    ? cleanUrl(process.env.NEXT_PUBLIC_API_URL)
-    : process.env.NEXT_PUBLIC_API_BASE_URL
-      ? cleanUrl(process.env.NEXT_PUBLIC_API_BASE_URL)
-      : DEFAULTS.apiBaseUrl,
+  // In the browser, ALWAYS use empty string so requests are relative (same-origin proxy).
+  // This keeps the auth cookie on the frontend domain and avoids cross-origin cookie drops.
+  apiBaseUrl:
+    typeof window !== "undefined"
+      ? ""
+      : process.env.NEXT_PUBLIC_API_URL
+        ? cleanUrl(process.env.NEXT_PUBLIC_API_URL)
+        : process.env.NEXT_PUBLIC_API_BASE_URL
+          ? cleanUrl(process.env.NEXT_PUBLIC_API_BASE_URL)
+          : DEFAULTS.apiBaseUrl,
   appName:
     process.env.NEXT_PUBLIC_APP_NAME || DEFAULTS.appName,
   appUrl: cleanUrl(
