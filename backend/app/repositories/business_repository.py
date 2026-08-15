@@ -21,7 +21,7 @@ Design notes
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.business import Business
@@ -88,6 +88,56 @@ class BusinessRepository:
         stmt = select(Business.id).where(Business.owner_id == owner_id)
         return self._db.scalar(stmt) is not None
 
+    # ---- Sprint 23 multi-business read helpers --------------------------
+
+    def get_by_id_for_owner(
+        self, business_id: int, owner_id: int
+    ) -> Business | None:
+        """Return the single business matching both ``business_id``
+        and ``owner_id``, or ``None`` if no such row exists.
+
+        Used by the active-business validator on ``PATCH /auth/me`` —
+        a user can only set the active id to one of their own rows.
+        """
+        stmt = select(Business).where(
+            Business.id == business_id, Business.owner_id == owner_id
+        )
+        return self._db.scalar(stmt)
+
+    def exists_any_owner(self, business_id: int) -> bool:
+        """Return ``True`` iff a business with ``business_id`` exists,
+        regardless of who owns it. Used by the active-business
+        validator to disambiguate 404 ('no such business') from 403
+        ('business exists but not owned by this user') without
+        leaking the existence of other users' rows beyond the
+        boolean."""
+        stmt = select(Business.id).where(Business.id == business_id)
+        return self._db.scalar(stmt) is not None
+
+    def list_for_owner(self, owner_id: int) -> list[Business]:
+        """Return every business the owner has, lightweight projection.
+
+        The profile panel only needs ``id``, ``legal_name``,
+        ``trade_name``, ``industry``, ``city``, ``is_completed`` and
+        ``created_at`` — so this query deliberately does NOT eager-load
+        the nested collections (products, certifications, ...). The
+        full payload is fetched by ``get_by_owner`` on the active
+        business read path.
+        """
+        stmt = (
+            select(Business)
+            .where(Business.owner_id == owner_id)
+            .order_by(Business.created_at.asc(), Business.id.asc())
+        )
+        return list(self._db.scalars(stmt).all())
+
+    def count_for_owner(self, owner_id: int) -> int:
+        """Return how many businesses the owner has. Used by the
+        "last business" guard on ``DELETE /business/{id}`` — a user
+        cannot delete their only remaining business."""
+        stmt = select(func.count(Business.id)).where(Business.owner_id == owner_id)
+        return int(self._db.scalar(stmt) or 0)
+
     # ---- Create --------------------------------------------------------
 
     def create(
@@ -113,13 +163,16 @@ class BusinessRepository:
         monthly_production_units: int | None = None,
         is_completed: bool = False,
     ) -> Business:
-        """Insert a new business row for the owner. Raises
-        ``BusinessAlreadyExists`` if the owner already has one."""
-        if self.exists_for_owner(owner_id):
-            raise BusinessAlreadyExists(
-                "A business profile already exists for this account."
-            )
+        """Insert a new business row for the owner.
 
+        Sprint 23 — the one-business-per-user cap is lifted. A user
+        may now own many businesses; uniqueness is not enforced at
+        the DB layer (``Business.owner_id`` is a plain indexed
+        ``ForeignKey``) and the repository no longer raises
+        ``BusinessAlreadyExists`` either. ``BusinessAlreadyExists``
+        is preserved as an exception class for back-compat but the
+        service layer no longer references it.
+        """
         business = Business(
             owner_id=owner_id,
             legal_name=legal_name.strip(),

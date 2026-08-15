@@ -84,11 +84,15 @@ return substantive payloads for the demo business.
 
 The Assistant uses the UrsBiz deterministic evidence bundle +
 the optional OpenAI-compatible provider (H7.3). With
-`AI_PROVIDER=placeholder` (the default in this repo) every
-assistant turn is served by the deterministic engine; the
-response still carries the `method=generative` envelope so the
-UI shows the **"Generated explanation"** trust label and the
-**"Why am I seeing this?"** disclosure works.
+`AI_PROVIDER=placeholder` (the OFFLINE / LAST-RESORT path,
+not the normal judge demo) every assistant turn is served by
+the deterministic engine and the wire envelope carries
+`fallback_used=true` + `generation_method=deterministic` so
+the UI shows the **"Calculated by UrsBiz rule engine"** trust
+label and the **"Why am I seeing this?"** disclosure works.
+The judge demo MUST run a real provider (Gemini OpenAI-compat
+or Ollama) — see `docs/DEPLOYMENT_HACKATHON.md §3` for the
+real-provider command template.
 
 ### 1.5 Trust envelopes are uniformly applied
 

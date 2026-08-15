@@ -320,11 +320,16 @@ export const chatService = {
   async appendMessage(
     sessionId: number,
     content: string,
-    opts: { mode?: "grounded" | "open" } = {},
+    opts: { mode?: "grounded" | "open"; language?: "en" | "kn" } = {},
   ): Promise<ChatMessageAppendResponse> {
     return apiClient.post<ChatMessageAppendResponse>(
       `/api/v1/chat/${sessionId}/message`,
-      { content, mode: opts.mode ?? "grounded" },
+      {
+        content,
+        mode: opts.mode ?? "grounded",
+        language: opts.language ?? "en",
+      },
+      { timeoutMs: 150000 },
     );
   },
 

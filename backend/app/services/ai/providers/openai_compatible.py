@@ -105,17 +105,13 @@ class OpenAICompatibleProvider:
         self._base_url = (base_url or "").rstrip("/")
         self._model = (model or "").strip()
         self._api_key = api_key or ""
-        # Defense in depth: cap any caller-supplied timeout at 30s
-        # so a single chat call can never hold a worker thread for
-        # more than half a minute. The httpx client uses this value
-        # directly for both connect and read timeouts. Callers that
-        # pass timeout=0 / None fall back to the 60s default before
-        # clamping (so the floor is preserved).
-        self._timeout = min(float(timeout) if timeout and timeout > 0 else 60.0, 30.0)
+        self._timeout = float(timeout) if timeout and timeout > 0 else 60.0
         self._require_json = bool(require_json)
         self._owns_client = http_client is None
-        self._client = http_client or httpx.Client(timeout=self._timeout)
-        self._available: bool = False
+        self._client = http_client or httpx.Client(
+            timeout=httpx.Timeout(self._timeout, connect=2.0)
+        )
+        self._available: bool = self._ping() if self._api_key else False
 
     # ---- protocol surface ---------------------------------------------- #
 
@@ -135,6 +131,14 @@ class OpenAICompatibleProvider:
         if not self._model:
             raise ProviderUnavailableError(
                 "OpenAI-compatible model name is not configured."
+            )
+        if not self._api_key:
+            raise ProviderUnavailableError(
+                "OpenAI-compatible API key is not configured."
+            )
+        if not self._available:
+            raise ProviderUnavailableError(
+                "OpenAI-compatible provider is not reachable."
             )
 
         url = f"{self._base_url}/chat/completions"
@@ -276,7 +280,7 @@ class OpenAICompatibleProvider:
         try:
             response = self._client.get(
                 f"{self._base_url}/models",
-                timeout=min(5.0, self._timeout),
+                timeout=min(1.0, self._timeout),
                 headers={"Authorization": f"Bearer {self._api_key}"} if self._api_key else {},
             )
             self._available = response.status_code < 500

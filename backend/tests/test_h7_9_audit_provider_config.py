@@ -67,17 +67,27 @@ class _StubSettings:
 
 
 def test_default_ai_model_is_real_gemini_model():
-    """The committed default must be a real Google model name."""
+    """The committed default must be a real Google model name.
+
+    Audit history (kept for the trail):
+      * "gemini-3.6-flash" — not a real Google model; every
+        chat call failed with 404. Fixed in H7.9R.
+      * "gemini-1.5-flash" — fixed default; later became
+        unreliable on the OpenAI-compatible endpoint.
+      * "gemini-2.0-flash" — current verified working default.
+        Future bumps MUST keep the value inside the Gemini
+        family AND the value must be a model an operator
+        can actually reach on the OpenAI-compatible endpoint.
+    """
     settings = Settings(_env_file=None)
-    # The previous default ("gemini-3.6-flash") does not exist;
-    # the audit fix changed it to "gemini-1.5-flash". Future
-    # bumps must keep it inside the Gemini family.
     assert settings.ai_model.startswith("gemini-"), (
         f"default ai_model {settings.ai_model!r} is not in the Gemini family"
     )
-    # The fixed default is the stable choice.
-    assert settings.ai_model == "gemini-1.5-flash", (
-        f"default ai_model changed unexpectedly to {settings.ai_model!r}"
+    # The current verified working default. Pin the exact
+    # value so an accidental change re-fails the audit.
+    assert settings.ai_model == "gemini-2.0-flash", (
+        f"default ai_model changed unexpectedly to {settings.ai_model!r}; "
+        f"the verified working model is 'gemini-2.0-flash'."
     )
 
 

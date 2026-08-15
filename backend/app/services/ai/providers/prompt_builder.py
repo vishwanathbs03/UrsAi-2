@@ -324,6 +324,7 @@ class AssistantPromptBuilder:
         mode: str = "grounded",
         reasoning_plan: "Any | None" = None,
         ranked_evidence: "Any | None" = None,
+        language: str = "en",
     ) -> AssistantRequest:
         return AssistantRequest(
             user_prompt=user_prompt,
@@ -333,6 +334,7 @@ class AssistantPromptBuilder:
             mode=mode,  # type: ignore[arg-type]
             reasoning_plan=reasoning_plan,
             ranked_evidence=ranked_evidence,
+            language=language,
         )
 
     @staticmethod
@@ -349,6 +351,21 @@ class AssistantPromptBuilder:
         if mode == "open":
             return _render_open_user_message(request)
         return _render_grounded_user_message(request)
+
+
+def _render_language_instruction_block(language: str) -> str:
+    """Render language directive for the LLM call."""
+    if language == "kn":
+        return (
+            "=== RESPONSE LANGUAGE REQUIREMENT ===\n"
+            "- Target Language: KANNADA (ಕನ್ನಡ).\n"
+            "- You MUST write the natural language answers, summaries, recommendations, and explanations in fluent, professional Kannada (ಕನ್ನಡ).\n"
+            "- Internal JSON Schema invariant: keep all JSON keys (such as 'executive_summary', 'business_facts', 'recommendations', 'risks', 'roi_estimate', etc.) in English exactly as defined in the schema.\n"
+            "- Numerical and Currency integrity: preserve all exact numbers, percentages (%), and currency figures (e.g. ₹12.5 lakh, ₹1.5 Cr, 18%, 25 employees) without distortion.\n"
+            "- Entity and Evidence integrity: preserve business names, URLs, and Evidence IDs (e.g. SCORE-OVERALL, REC-01, RULE-01) verbatim.\n"
+            "=== END RESPONSE LANGUAGE REQUIREMENT ==="
+        )
+    return ""
 
 
 def _render_business_context_block(ctx: AssistantContext) -> list[str]:
@@ -534,10 +551,11 @@ def _render_grounded_user_message(request: AssistantRequest) -> str:
     if _is_ranked_evidence(getattr(request, "ranked_evidence", None)):
         parts.append("")
         parts.append(_render_ranked_registry_block(request))
-    else:
-        registry = EvidenceRegistry(request.context)
-        parts.append("")
-        parts.append(registry.to_prompt_block())
+    if getattr(request, "language", "en") == "kn":
+        lang_block = _render_language_instruction_block("kn")
+        if lang_block:
+            parts.append("")
+            parts.append(lang_block)
 
     parts.append("")
     parts.append(_untrusted_user_block(request.user_prompt))
@@ -600,6 +618,12 @@ def _render_open_user_message(request: AssistantRequest) -> str:
             if registry.count > 0:
                 parts.append("")
                 parts.append(registry.to_prompt_block())
+
+    if getattr(request, "language", "en") == "kn":
+        lang_block = _render_language_instruction_block("kn")
+        if lang_block:
+            parts.append("")
+            parts.append(lang_block)
 
     parts.append("")
     parts.append(_untrusted_user_block(request.user_prompt))

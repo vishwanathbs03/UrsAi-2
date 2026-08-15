@@ -765,6 +765,9 @@ class ChatGenerationMeta(BaseModel):
     """SPRINT AI-17 — schema version of the AI-17 pipeline.
     Empty when the module did not run."""
 
+    language: str = "en"
+    """Language used for generation ('en' | 'kn')."""
+
 
 # --------------------------------------------------------------------------- #
 # Messages
@@ -877,6 +880,9 @@ class ChatMessageOut(BaseModel):
     mode: Literal["grounded", "open"] | None = None
     """The mode the assistant ran under. ``None`` for user turns
     and for legacy rows that pre-date the column."""
+
+    language: str = "en"
+    """The language the message was generated in ('en' | 'kn')."""
 
     confidence: int | None = Field(default=None, ge=0, le=100)
     """Mirrors ``generation.confidence`` — the provider's
@@ -1315,6 +1321,7 @@ class ChatMessageCreateRequest(BaseModel):
     # H7.8C — the hybrid mode. ``grounded`` is the default
     # (evidence-bounded); ``open`` is permissive.
     mode: Literal["grounded", "open"] = "grounded"
+    language: Literal["en", "kn"] = "en"
 
 
 # --------------------------------------------------------------------------- #

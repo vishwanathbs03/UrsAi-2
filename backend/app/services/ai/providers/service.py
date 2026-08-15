@@ -149,21 +149,51 @@ from app.services.ai.providers.base import (
 logger = logging.getLogger("atlas.ai.provider")
 
 
-# H7.9R+ — hard wall-clock cap on a single outbound LLM call.
+# H7.9R+ / H8.11 — hard wall-clock cap on a single outbound LLM call.
 # The provider's underlying httpx client already has its own
-# connect/read timeouts; this constant is the *outer* ceiling
-# that guarantees no chat request can ever hold a worker thread
-# for more than this many seconds, regardless of retry behaviour
-# inside the circuit breaker or any future backoff. 15s matches
-# the value committed in ``backend/.env`` (``AI_REQUEST_TIMEOUT_SECONDS``).
-HARD_CALL_TIMEOUT_SECONDS: float = 15.0
+# connect/read timeouts (``ai_request_timeout_seconds``); this
+# constant is the *outer* ceiling that guarantees no chat request
+# can ever hold a worker thread for more than this many seconds,
+# regardless of retry behaviour inside the circuit breaker or any
+# future backoff.
+#
+# The previous hard-coded 15 s value was sized for a Gemini-class
+# upstream. llama3.2:3b on the 5.9 GB judge host legitimately
+# takes 25–35 s for a full grounded-mode prompt (cold load +
+# prompt-eval of the 12-section schema + JSON generation), so the
+# cap is now sourced from ``Settings.ai_hard_call_timeout_seconds``
+# with a safe default of 45 s. The provider's inner
+# ``AI_REQUEST_TIMEOUT_SECONDS`` (90 s in production) remains the
+# authoritative cap if the upstream truly hangs.
+def _resolve_hard_call_timeout() -> float:
+    """Read ``ai_hard_call_timeout_seconds`` from settings, cached.
+
+    Lazy: avoids a module-load-time ``get_settings()`` call (which
+    would initialise the lru_cache before app config is ready in
+    unit tests that import this module in isolation).
+    """
+    try:
+        from app.config.settings import get_settings
+
+        return float(
+            getattr(
+                get_settings(),
+                "ai_hard_call_timeout_seconds",
+                45.0,
+            )
+        )
+    except Exception:  # noqa: BLE001 — defensive
+        return 45.0
+
+
+HARD_CALL_TIMEOUT_SECONDS: float = _resolve_hard_call_timeout()
 
 # Single shared executor for ``_call_with_hard_timeout`` below.
 # ``max_workers=1`` so a slow provider does not get a pool of
 # parallel attempts; the cap is the timeout, not parallelism.
 # Daemon threads so a stuck provider cannot block process exit.
 _HARD_TIMEOUT_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="ai-hard-timeout"
+    max_workers=8, thread_name_prefix="ai-hard-timeout"
 )
 
 
@@ -198,8 +228,26 @@ def _call_with_hard_timeout(
     cannot block process exit) but the *caller* immediately
     receives a :class:`ProviderTimeoutError` and falls back to
     the deterministic provider. The provider's ``close()`` is
-    invoked from the caller's thread so the underlying HTTP
-    connection is released and the next request starts clean.
+    invoked from the caller's thread ONLY on a true wall-clock
+    timeout so the underlying HTTP connection is released and
+    the next request starts clean. On a *transient* provider
+    error (e.g. ``AIProviderError``, ``ProviderTimeoutError``),
+    the provider is left open so the circuit breaker's retry
+    can reuse the same client.
+
+    Why the close()-on-any-exception path was wrong (H8.11 fix)
+    ----------------------------------------------------------
+    Previously this wrapper closed the provider on *every*
+    exception. That broke the circuit breaker's retry: after the
+    first attempt raised, the breaker retried with the SAME
+    provider, whose ``httpx.Client`` had just been closed. The
+    retry then died with ``"Cannot send a request, as the client
+    has been closed."`` — which was reported as a separate
+    ``provider_error`` even though the underlying upstream was
+    healthy. The user-visible effect was that every other
+    request fell back to the deterministic engine even when the
+    real LLM was reachable. Closing is now restricted to the
+    wall-clock timeout path.
 
     The previous architecture (no hard cap) caused chat requests
     to hang indefinitely when the upstream was unreachable. The
@@ -209,16 +257,24 @@ def _call_with_hard_timeout(
     future = _HARD_TIMEOUT_EXECUTOR.submit(provider.complete, request)
     try:
         return future.result(timeout=timeout)
-    except Exception:
-        # Any exception from the provider propagates; only a
-        # wall-clock timeout is converted here. We do NOT call
-        # ``future.cancel()`` once the call has started — Python
-        # cannot interrupt a running thread — but we DO close
-        # the provider so the underlying socket is released.
+    except concurrent.futures.TimeoutError:
+        # Wall-clock cap fired. The provider thread is still
+        # running in the background; we cannot interrupt it,
+        # but we DO close the provider so the underlying socket
+        # is released. The next ``service.generate`` call gets a
+        # brand-new ``OllamaProvider`` from the factory anyway,
+        # so the closed client is harmless.
         try:
             provider.close()
         except Exception:
             pass
+        raise
+    except Exception:
+        # Transient provider error — leave the provider open so
+        # the circuit breaker's retry (if any) can reuse the
+        # same httpx client. The provider will be closed on
+        # the next wall-clock timeout or when the factory
+        # discards it.
         raise
 
 
@@ -303,17 +359,20 @@ class AssistantProviderService:
         provider: Provider | None = None,
         require_schema: bool | None = None,
         mode: Mode = "grounded",
+        context: AssistantContext | None = None,
+        language: str = "en",
     ) -> AssistantResponse:
         """Generate a reply with multi-tier resilience and circuit breaker protection."""
-        try:
-            context = self._context_builder.build(
-                owner_id=owner_id, user_prompt=user_prompt
-            )
-        except TypeError:
-            context = self._context_builder.build(owner_id=owner_id)
-            if context.context_manifest is None and user_prompt:
-                from app.services.ai.providers.context_builder import select_relevant_context
-                context = select_relevant_context(context, user_prompt)
+        if context is None:
+            try:
+                context = self._context_builder.build(
+                    owner_id=owner_id, user_prompt=user_prompt
+                )
+            except TypeError:
+                context = self._context_builder.build(owner_id=owner_id)
+                if context.context_manifest is None and user_prompt:
+                    from app.services.ai.providers.context_builder import select_relevant_context
+                    context = select_relevant_context(context, user_prompt)
 
         # H8.11 — pre-LLM reasoning layer. The engine emits
         # a structured plan; the retriever ranks the
@@ -439,6 +498,7 @@ class AssistantProviderService:
             mode=effective_mode,
             reasoning_plan=reasoning_plan,
             ranked_evidence=ranked_evidence,
+            language=language,
         )
 
         chosen = provider or self._factory.build()
@@ -449,7 +509,9 @@ class AssistantProviderService:
             return self._fallback_chain(request, reason="circuit_open", mode=mode)
 
         try:
-            if provider:
+            if isinstance(chosen, DeterministicFallbackProvider) or getattr(chosen, "name", "") == "deterministic-fallback":
+                response = chosen.complete(request)
+            elif provider:
                 # H7.9R+ — hard wall-clock cap on every outbound
                 # call. ``asyncio.wait_for`` is the async equivalent;
                 # we use ``_call_with_hard_timeout`` (a
@@ -1340,19 +1402,6 @@ class AssistantProviderService:
                     "request_id": getattr(request, "request_id", None),
                 },
             )
-            debug_path = (
-                "C:/Users/Win/.claude/jobs/c5f14bf8/tmp/schema_debug.txt"
-            )
-            try:
-                with open(debug_path, "a", encoding="utf-8") as _f:
-                    _f.write(
-                        "=== H7.8C DEBUG: grounding_failed ===\n"
-                        f"errors: {list(report.errors)[:30]}\n"
-                        f"score: {report.score}\n"
-                        "=== END DEBUG ===\n\n"
-                    )
-            except Exception:
-                pass
             return self._fallback(
                 request,
                 reason="grounding_invalid",
@@ -1449,6 +1498,7 @@ class AssistantProviderService:
             else None
         )
         meta = meta.merge(
+            language=getattr(request, "language", "en") or "en",
             grounding_validated=True,
             grounding_score=report.score,
             schema_validated=bool(parsed is not None),
@@ -1499,6 +1549,7 @@ class AssistantProviderService:
         meta = _replace_ai1(
             meta,
             mode=wire_mode,
+            language=getattr(request, "language", "en") or "en",
             deterministic_services_used=tuple(
                 r.service_name for r in tool_results if r.status == "ok"
             ),

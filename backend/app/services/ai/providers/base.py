@@ -500,6 +500,7 @@ class AssistantRequest:
     # footer. Backward-compatible: default ``None`` keeps the
     # pre-H8.11 ``registry.all()`` ordering.
     ranked_evidence: Any | None = None
+    language: str = "en"
 
 
 # --------------------------------------------------------------------------- #
@@ -870,6 +871,7 @@ class GenerationMeta:
     numeric_corrections: tuple[dict, ...] = field(default_factory=tuple)
     claim_lifecycle: dict | None = None
     bounded_repair_version: str = ""
+    language: str = "en"
 
     @staticmethod
     def empty(
@@ -945,6 +947,7 @@ class GenerationMeta:
         numeric_corrections: tuple[dict, ...] | list[dict] = (),
         claim_lifecycle: dict | None = None,
         bounded_repair_version: str = "",
+        language: str = "en",
     ) -> "GenerationMeta":
         """Return a default-valued GenerationMeta."""
         # SPRINT AI-11 — coerce list→tuple so callers can pass the
@@ -1036,6 +1039,7 @@ class GenerationMeta:
             numeric_corrections=tuple(numeric_corrections or ()),
             claim_lifecycle=claim_lifecycle,
             bounded_repair_version=bounded_repair_version,
+            language=language,
         )
 
     def merge(self, **overrides: Any) -> "GenerationMeta":
@@ -1334,6 +1338,7 @@ class DeterministicFallbackProvider:
             provider=self.name,
             model=self.name,
             mode=request.mode,
+            language=getattr(request, "language", "en") or "en",
             fallback_used=True,
             fallback_reason=reason,
             generation_method="deterministic",
@@ -1381,9 +1386,132 @@ class DeterministicFallbackProvider:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Fallback renderer — pure function over the context
-# --------------------------------------------------------------------------- #
+def _fallback_body_kn(request: AssistantRequest) -> str:
+    """Render the deterministic fallback body in natural, professional Kannada."""
+    from app.services.ai.providers.intent_router import (
+        QuestionIntent,
+        build_intent_frame,
+    )
+
+    ctx = request.context
+    prompt = (request.user_prompt or "").strip() or "ನಮ್ಮ ವ್ಯವಹಾರದ ಬಗ್ಗೆ ತಿಳಿಸಿ."
+    frame = build_intent_frame(prompt, ctx)
+
+    lines: list[str] = []
+    lines.append(f'ನಿಮ್ಮ ಪ್ರಶ್ನೆ: "{prompt}"')
+    lines.append(f"ಒಟ್ಟಾರೆ ವ್ಯವಹಾರ ಸ್ಕೋರ್: {ctx.overall_business_score}/100 ({ctx.band}).")
+    if ctx.dna.archetype_title:
+        lines.append(
+            f"ವ್ಯವಹಾರ DNA: {ctx.dna.archetype_title} "
+            f"(ಹೊಂದಾಣಿಕೆ {ctx.dna.match_score}%)."
+        )
+
+    intent_map = {
+        QuestionIntent.REACH_REVENUE_TARGET: "ಆದಾಯ ಗುರಿ ತಲುಪುವುದು",
+        QuestionIntent.BIGGEST_WEAKNESS: "ಮುಖ್ಯ ಅಪಾಯ ಮತ್ತು ದೌರ್ಬಲ್ಯ ವಿಶ್ಲೇಷಣೆ",
+        QuestionIntent.GOVERNMENT_SCHEMES: "ಸರ್ಕಾರಿ ಯೋಜನೆಗಳು ಮತ್ತು ಸಬ್ಸಿಡಿಗಳು",
+        QuestionIntent.TWELVE_MONTH_ROADMAP: "12 ತಿಂಗಳ ಕಾರ್ಯತಂತ್ರ ಯೋಜನೆ (ರೋಡ್‌ಮ್ಯಾಪ್)",
+        QuestionIntent.EXPORT_EXPANSION: "ರಫ್ತು ಮಾರುಕಟ್ಟೆ ವಿಸ್ತರಣೆ",
+        QuestionIntent.HIRING: "ನೇಮಕಾತಿ ಮತ್ತು ತಂಡದ ವಿಸ್ತರಣೆ",
+        QuestionIntent.GENERAL: "ಸಾಮಾನ್ಯ ವ್ಯವಹಾರ ವಿಶ್ಲೇಷಣೆ",
+    }
+    lines.append("")
+    lines.append(f"ಗುರುತಿಸಲಾದ ಉದ್ದೇಶ: {intent_map.get(frame.intent, 'ಸಾಮಾನ್ಯ ವ್ಯವಹಾರ ವಿಶ್ಲೇಷಣೆ')}.")
+
+    rev_inr = ctx.annual_revenue_inr
+    rev_str = f"₹{rev_inr / 10000000:.2f} Cr (₹{rev_inr:,.0f})" if rev_inr else "ದಾಖಲಾಗಿಲ್ಲ"
+
+    if frame.intent == QuestionIntent.REACH_REVENUE_TARGET:
+        lines.append("")
+        lines.append("### 1. ಆದಾಯ ಮತ್ತು ಬೆಳವಣಿಗೆಯ ವಿಶ್ಲೇಷಣೆ")
+        lines.append(f"  - ಪ್ರಸ್ತುತ ದಾಖಲಾದ ವಾರ್ಷಿಕ ಆದಾಯ: {rev_str}.")
+        if ctx.target_revenue_inr > 0:
+            lines.append(f"  - ಗುರಿ ಆದಾಯ: ₹{ctx.target_revenue_inr / 10000000:.2f} Cr.")
+            gap = max(0, ctx.target_revenue_inr - rev_inr)
+            lines.append(f"  - ತಲುಪಬೇಕಾದ ವ್ಯತ್ಯಾಸ: ₹{gap / 10000000:.2f} Cr.")
+        else:
+            lines.append("  - ನಿಮ್ಮ ಪ್ರೊಫೈಲ್‌ನಲ್ಲಿ ದಾಖಲಾದ ಆದಾಯವನ್ನು ಹೆಚ್ಚಿಸಲು ಶಿಫಾರಸು ಮಾಡಿದ ಕ್ರಮಗಳನ್ನು ಕೆಳಗೆ ನೀಡಲಾಗಿದೆ.")
+    elif frame.intent == QuestionIntent.BIGGEST_WEAKNESS:
+        lines.append("")
+        lines.append("### 1. ವ್ಯವಹಾರದ ಮುಖ್ಯ ಅಪಾಯಗಳು ಮತ್ತು ದೌರ್ಬಲ್ಯ")
+        if ctx.rules:
+            critical = [r for r in ctx.rules if r.priority in ("Critical", "High")]
+            top_rule = critical[0] if critical else ctx.rules[0]
+            lines.append(f"  - ಮುಖ್ಯ ಅಪಾಯ: {top_rule.title} (ಪ್ರಭಾವ: {top_rule.estimated_impact}).")
+            lines.append(f"  - ಪರಿಹಾರ ಸಲಹೆ: ಪೂರೈಕೆ ಸರಪಳಿ ವೈವಿಧ್ಯೀಕರಣ ಮತ್ತು ಆಂತರಿಕ ಪ್ರಕ್ರಿಯೆಗಳ ಬಲವರ್ಧನೆ.")
+        else:
+            lines.append("  - ಯಾವುದೇ ಗಂಭೀರ ಅಪಾಯಗಳು ಕಂಡುಬಂದಿಲ್ಲ. ಆಂತರಿಕ ನಿಯಂತ್ರಣಗಳನ್ನು ಬಲಪಡಿಸುವುದು ಸೂಕ್ತ.")
+    elif frame.intent == QuestionIntent.GOVERNMENT_SCHEMES:
+        lines.append("")
+        lines.append("### 1. ಲಭ್ಯವಿರುವ ಸರ್ಕಾರಿ ಯೋಜನೆಗಳು")
+        if ctx.schemes:
+            lines.append(f"  - ನಿಮ್ಮ ಪ್ರೊಫೈಲ್‌ಗೆ ಹೊಂದಿಕೆಯಾಗುವ {len(ctx.schemes)} ಯೋಜನೆಗಳು ಲಭ್ಯವಿವೆ.")
+            for s in ctx.schemes[:3]:
+                lines.append(f"  - {s.name} (ಹೊಂದಾಣಿಕೆ: {s.match_score}%, ಪ್ರಾಧಿಕಾರ: {s.agency})")
+        else:
+            lines.append("  - MSME ಸಬ್ಸಿಡಿ ಮತ್ತು ಕ್ರೆಡಿಟ್ ಗ್ಯಾರಂಟಿ ಯೋಜನೆಗಳು ಲಭ್ಯವಿವೆ (CGTMSE, MUDRA).")
+    else:
+        lines.append("")
+        lines.append("### 1. ವ್ಯವಹಾರ ದತ್ತಾಂಶ ಮತ್ತು ಪ್ರಸ್ತುತ ಸ್ಥಿತಿ")
+        lines.append(f"  - ಕಾನೂನುಬದ್ಧ ಹೆಸರು: {ctx.legal_name or 'ವ್ಯವಹಾರ'} | ಉದ್ಯಮ: {ctx.industry or 'MSME'} | ಪ್ರಸ್ತುತ ಆದಾಯ: {rev_str}")
+        lines.append(f"  - ಪ್ರಸ್ತುತ ಸ್ಕೋರ್: {ctx.overall_business_score}/100 ({ctx.band})")
+
+    # Recommendations
+    if ctx.recommendations:
+        top = sorted(
+            ctx.recommendations,
+            key=lambda r: (
+                _priority_rank(r.priority),
+                -r.estimated_score_gain,
+            ),
+        )[:3]
+        lines.append("")
+        lines.append("### 2. ಪ್ರಮುಖ ಶಿಫಾರಸುಗಳು:")
+        for i, r in enumerate(top, start=1):
+            lines.append(
+                f"  {i}. {r.title} "
+                f"[{r.priority}, +{r.estimated_score_gain} ಸ್ಕೋರ್, "
+                f"ಅಂದಾಜು ಅವಧಿ {r.estimated_timeline}, ROI {_fmt_money(r.estimated_roi)}]"
+            )
+
+    # Roadmap
+    if ctx.roadmap:
+        first = sorted(
+            ctx.roadmap,
+            key=lambda it: it.estimated_start_order,
+        )[0]
+        lines.append("")
+        lines.append("### 3. ಕಾರ್ಯ ಯೋಜನೆ (ರೋಡ್‌ಮ್ಯಾಪ್):")
+        lines.append(f'  - ಮೊದಲ ಹಂತ: "{first.title}" '
+            f"(ಹಂತ {first.phase}, +{first.expected_score_improvement} ಸ್ಕೋರ್, "
+            f"{first.completion_percentage}% ಪೂರ್ಣಗೊಂಡಿದೆ)."
+        )
+
+    # Unified footer
+    lines.append("")
+    lines.append("### EVIDENCE")
+    ev_ids = _collect_evidence_ids(frame.sections + frame.secondary_sections)
+    if ev_ids:
+        for eid in ev_ids:
+            lines.append(f"  - {eid}")
+    else:
+        lines.append("  - SCORE-OVERALL")
+        lines.append("  - BIZ-PROFILE-REVENUE")
+
+    lines.append("")
+    lines.append("### ASSUMPTIONS")
+    lines.append("  - All sections use only verified fields in the business profile.")
+
+    lines.append("")
+    lines.append("### LIMITATIONS")
+    lines.append("  - None — every section is grounded in verified twin metrics.")
+
+    lines.append("")
+    lines.append("### NEXT ACTIONS")
+    lines.append("  - ಪ್ರಮುಖ ಶಿಫಾರಸುಗಳ ಅನುಷ್ಠಾನವನ್ನು ಪ್ರಾರಂಭಿಸಿ.")
+    lines.append("  - ಆಕ್ಷನ್ ಬೋರ್ಡ್‌ನಲ್ಲಿ ಆದ್ಯತೆಯ ಕಾರ್ಯಗಳನ್ನು ಪೂರ್ಣಗೊಳಿಸಿ.")
+
+    return "\n".join(lines)
 
 
 def _fallback_body(request: AssistantRequest) -> str:
@@ -1412,6 +1540,9 @@ def _fallback_body(request: AssistantRequest) -> str:
     while providing the 10-section MSME Business Consultant
     framing.
     """
+    if getattr(request, "language", "en") == "kn":
+        return _fallback_body_kn(request)
+
     from app.services.ai.providers.intent_router import (
         IntentSection,
         QuestionIntent,

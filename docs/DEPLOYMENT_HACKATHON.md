@@ -63,8 +63,36 @@ load balancer with `COOKIE_SECURE=true` set there).
 
 ```bash
 # 1. Backend (production mode, hardened cookie, real JWT secret).
+#
+# ---------------------------------------------------------------
+# IMPORTANT — never use AI_PROVIDER=placeholder for the judge
+# demo.  placeholder routes every chat reply to the
+# deterministic rule engine; the user never sees a real LLM
+# answer.  The judge demo MUST use one of the REAL provider
+# blocks below.  The placeholder command is moved to the
+# "OFFLINE FALLBACK" section at the bottom of this block.
+# ---------------------------------------------------------------
+
+# ---- (A) JUDGE DEMO — REAL PROVIDER (use this) ----
+#
+# Pick ONE of the two real-provider commands below and fill
+# the secret in from the team's secret manager.  The populated
+# command is NEVER committed — only the operator's terminal
+# history retains it.
+#
+# (A1) Google Gemini (OpenAI-compatible endpoint — default).
+#   - Get the key from the team's GCP secret manager.
+#   - The key MUST be a Google API key (starts with "AIza"),
+#     NOT an Azure shared-access-token (which starts with "AQ.").
+#   - AI_MODEL must be a verified working Gemini model on the
+#     OpenAI-compatible endpoint; the committed default in
+#     settings.py is "gemini-2.0-flash".
 cd backend
-JWT_SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')" \
+export JWT_SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')"
+export AI_PROVIDER=openai_compatible
+export AI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export AI_MODEL="gemini-2.0-flash"
+export AI_API_KEY="<paste the team's Gemini API key here>"   # AIza... — never committed
 APP_ENV=production \
 APP_DEBUG=false \
 COOKIE_SECURE=false \
@@ -74,9 +102,42 @@ SECURITY_HEADERS_ENABLED=true \
 RATE_LIMIT_ENABLED=true \
 DATABASE_URL="sqlite:///./ursbiz_prod.db" \
 LOG_LEVEL=INFO \
-AI_PROVIDER=placeholder \
 TRUSTED_PROXY_HOPS=1 \
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
+
+# (A2) Local Ollama on the same host as the judge box.
+#   - OLLAMA_BASE_URL must be the REACHABLE network hostname.
+#     NEVER use "localhost" if Ollama is in a different
+#     container/host.
+#   - OLLAMA_MODEL must be a model the box has actually pulled
+#     (`ollama pull <model>`); a missing model returns 404.
+# export OLLAMA_BASE_URL="http://127.0.0.1:11434"
+# export OLLAMA_MODEL="llama3.2:3b"
+# export AI_PROVIDER=ollama
+# (then start uvicorn as above, dropping AI_BASE_URL / AI_API_KEY)
+
+# ---- (B) OFFLINE FALLBACK — DO NOT USE FOR THE JUDGE DEMO ----
+#
+# The placeholder provider is the LAST-RESORT path.  Every chat
+# reply is the deterministic rule engine — useful for offline
+# smoke tests only.  Never present this as the normal judge
+# deployment; the brief explicitly forbids presenting the
+# fallback as the AI.
+#
+# cd backend
+# JWT_SECRET_KEY="$(python -c 'import secrets;print(secrets.token_hex(32))')" \
+# APP_ENV=production \
+# APP_DEBUG=false \
+# COOKIE_SECURE=false \
+# COOKIE_SAMESITE=lax \
+# CORS_ORIGINS=http://127.0.0.1:3000 \
+# SECURITY_HEADERS_ENABLED=true \
+# RATE_LIMIT_ENABLED=true \
+# DATABASE_URL="sqlite:///./ursbiz_prod.db" \
+# LOG_LEVEL=INFO \
+# AI_PROVIDER=placeholder \
+# TRUSTED_PROXY_HOPS=1 \
+# .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001 --no-access-log
 
 # 2. (in another shell) seed the demo judge account.
 cd backend

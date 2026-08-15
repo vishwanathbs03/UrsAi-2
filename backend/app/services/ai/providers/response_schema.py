@@ -627,7 +627,7 @@ def parse_model_output(raw_text: str) -> ValidationResult:
         limitations=limitations,
         confidence=confidence,
         evidence_references=tuple(references),
-        business_facts=assumptions if not business_facts else business_facts,
+        business_facts=business_facts,
         situation_assessment=situation_assessment,
         reasoning=reasoning,
         root_causes=root_causes,

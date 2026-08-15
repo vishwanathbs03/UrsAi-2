@@ -142,9 +142,9 @@ class ProviderFactory:
         require_json = bool(
             getattr(self._settings, "ai_require_schema", True)
         )
-        if not base_url or not model:
-            # Not configured -> fall back silently. Same UX as
-            # an Ollama provider whose URL is empty.
+        is_local = any(loc in base_url for loc in ("localhost", "127.0.0.1", "0.0.0.0", "::1"))
+        if not base_url or not model or (not is_local and not api_key):
+            # Not configured (or remote endpoint with no API key) -> fall back silently.
             return DeterministicFallbackProvider()
         provider = OpenAICompatibleProvider(
             base_url=base_url,

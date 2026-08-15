@@ -13,12 +13,8 @@
  *   - "Requires Verification"        open-mode LLM, no business context
  *   - "Calculated by UrsBiz"         deterministic rule engine
  *
- * Each label has both a textual copy (the literal string the
- * brief asks for) and a leading icon. The icon is hidden from
- * assistive tech because the visible text label is the source
- * of truth — the brief mandates "All visual indicators must
- * have textual equivalents. Do not rely only on colors to
- * indicate trust or risk."
+ * Fully localized for English & Kannada while preserving
+ * data-trust-bar-label machine-readable attributes.
  */
 
 import {
@@ -28,6 +24,7 @@ import {
   Sparkles,
   TrendingUp,
 } from "lucide-react";
+import { useLanguage } from "@/context/language-context";
 import { cn } from "@/lib/utils";
 import type { BriefTrustLabel } from "./sections/mapTrustLabel";
 
@@ -69,9 +66,10 @@ export interface TrustBarProps {
 }
 
 export function TrustBar({ label, confidence, className }: TrustBarProps) {
+  const { language } = useLanguage();
   const entry = TRUST_BAR_COPY[label];
   const Icon = entry.Icon;
-  const text = labelText(label);
+  const text = labelText(label, language);
   return (
     <div
       role="note"
@@ -101,11 +99,23 @@ export function TrustBar({ label, confidence, className }: TrustBarProps) {
 }
 
 /**
- * Lookup helper that exposes the literal label copy so other
- * components (e.g. clipboard copy, screen-reader summaries)
- * can use the same string without duplicating the dictionary.
+ * Lookup helper that exposes the localized label copy.
  */
-export function labelText(label: BriefTrustLabel): string {
+export function labelText(label: BriefTrustLabel, lang: string = "en"): string {
+  if (lang === "kn") {
+    switch (label) {
+      case "verified_business_evidence":
+        return "ಪರಿಶೀಲಿತ ವ್ಯವಹಾರ ಪುರಾವೆ";
+      case "ai_analysis":
+        return "AI ವಿಶ್ಲೇಷಣೆ";
+      case "illustrative_scenario":
+        return "ಸನ್ನಿವೇಶ ಅಂದಾಜು";
+      case "requires_verification":
+        return "ಪರಿಶೀಲನೆ ಅಗತ್ಯವಿದೆ";
+      case "calculated_by_ursbiz":
+        return "UrsBiz ಮೂಲಕ ಲೆಕ್ಕಹಾಕಲಾಗಿದೆ";
+    }
+  }
   switch (label) {
     case "verified_business_evidence":
       return "Verified Business Evidence";

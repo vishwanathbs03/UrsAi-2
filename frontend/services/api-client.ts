@@ -56,6 +56,7 @@ export class ApiError extends Error {
 export type RequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined>;
+  timeoutMs?: number;
 };
 
 function buildUrl(path: string, query?: RequestOptions["query"]): string {
@@ -91,7 +92,7 @@ export async function apiRequest<T = unknown>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const { body, query, headers, ...rest } = options;
+  const { body, query, headers, timeoutMs: customTimeoutMs, ...rest } = options;
   const url = buildUrl(path, query);
 
   // Temporary request/response trace for the business wizard. DEV ONLY —
@@ -110,12 +111,9 @@ export async function apiRequest<T = unknown>(
     });
   }
 
-  // Network-level timeout (8s). Some long-running endpoints (analysis
-  // recompute, decision-engine synthesis) can take 5-10s; 8s is the
-  // budget we want to surface to the user. The auth service uses a
-  // tighter 5s budget — for the business profile write we can be a
-  // little more generous because it's a heavier payload.
-  const timeoutMs = 8000;
+  // Network-level timeout. Defaults to 15s for standard requests, or
+  // caller-specified budget (e.g. 150s for LLM generation).
+  const timeoutMs = customTimeoutMs ?? 15000;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   // If the caller passed their own signal, link it through.

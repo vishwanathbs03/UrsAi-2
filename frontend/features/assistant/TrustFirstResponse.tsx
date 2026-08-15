@@ -446,11 +446,9 @@ function WhatIFoundBody({
     );
   }
   return (
-    <div
-      className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-background/40 p-3 leading-relaxed text-foreground"
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: formatAssistantBody(message.content) }}
-    />
+    <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-background/40 p-3 leading-relaxed text-foreground">
+      {formatAssistantBody(message.content || "")}
+    </div>
   );
 }
 

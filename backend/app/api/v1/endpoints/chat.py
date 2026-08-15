@@ -96,6 +96,7 @@ router = APIRouter(prefix="/chat", tags=["assistant-chat"])
 # read-only. Mirrors the pattern the existing knowledge
 # endpoint uses.
 _KNOWLEDGE_REPO_SINGLETON: JsonKnowledgeRepository | None = None
+_KNOWLEDGE_RETRIEVER_SINGLETON: KnowledgeRetrievalService | None = None
 
 
 def _get_knowledge_repository() -> JsonKnowledgeRepository:
@@ -103,6 +104,18 @@ def _get_knowledge_repository() -> JsonKnowledgeRepository:
     if _KNOWLEDGE_REPO_SINGLETON is None:
         _KNOWLEDGE_REPO_SINGLETON = JsonKnowledgeRepository()
     return _KNOWLEDGE_REPO_SINGLETON
+
+
+def _get_knowledge_retriever() -> KnowledgeRetrievalService:
+    global _KNOWLEDGE_RETRIEVER_SINGLETON
+    if _KNOWLEDGE_RETRIEVER_SINGLETON is None:
+        settings = get_settings()
+        top_k = getattr(settings, "knowledge_retrieval_top_k", 3)
+        _KNOWLEDGE_RETRIEVER_SINGLETON = KnowledgeRetrievalService.from_repository(
+            _get_knowledge_repository(),
+            top_k=top_k,
+        )
+    return _KNOWLEDGE_RETRIEVER_SINGLETON
 
 
 def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
@@ -169,12 +182,7 @@ def _service(db: Annotated[Session, Depends(get_db)]) -> ConversationService:
     # KPI, Knowledge Retrieval, Predictive Sprint 14)
     # instead of returning ``status="not_implemented"``
     # stubs for every service.
-    knowledge_retriever = KnowledgeRetrievalService.from_repository(
-        _get_knowledge_repository(),
-        top_k=settings.knowledge_retrieval_top_k
-        if hasattr(settings, "knowledge_retrieval_top_k")
-        else 3,
-    )
+    knowledge_retriever = _get_knowledge_retriever()
 
     from app.services.ai.reasoning.tool_selector import ToolDispatcher
     from app.services.ai.reasoning.engine_tools import (
@@ -467,6 +475,7 @@ def append_message(
             session_id=session_id,
             content=payload.content,
             mode=payload.mode,
+            language=payload.language,
         )
     except ChatSessionNotFound as exc:
         raise HTTPException(
@@ -491,8 +500,10 @@ def append_message(
         assistant_payload["generation"] = {
             **assistant_payload["generation"],
             "mode": payload.mode,
+            "language": payload.language,
         }
     assistant_payload["mode"] = payload.mode
+    assistant_payload["language"] = payload.language
     return ChatMessageAppendResponse.model_validate({
         "user_message": result.user_message,
         "assistant_message": assistant_payload,

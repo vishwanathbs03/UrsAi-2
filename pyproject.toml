@@ -11,3 +11,9 @@ testpaths = ["backend/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    # Tests that need a live external service (Ollama daemon, real
+    # cloud API key, etc.). Skipped by the unit-test CI lane; run
+    # only on the integration lane or on the operator's host.
+    "integration: marks tests that require a live external service",
+]

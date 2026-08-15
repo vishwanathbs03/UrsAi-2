@@ -57,6 +57,7 @@ the model returns — non-deterministic by construction.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -207,6 +208,7 @@ class ConversationService:
         session_id: int,
         content: str,
         mode: str = "grounded",
+        language: str = "en",
     ) -> AppendResult:
         """Append a user message + the assistant's reply.
 
@@ -248,27 +250,12 @@ class ConversationService:
         # 3. Build the assistant context via Part 2.
         context = self._assistant.build_context(owner_id=owner_id)
 
-        # 3.5. Sprint AI-5 — Business Scenario Copilot. When
-        #      the prompt is a "what if" question, build the
-        #      structured 10-field envelope BEFORE the LLM
-        #      call so the envelope can ride the GenerationMeta
-        #      to the wire. The LLM is still invoked afterwards
-        #      for surrounding prose. The whole step is wrapped
-        #      in try/except so a ScenarioAnalyzer failure never
-        #      crashes the chat endpoint.
+        # 3.5. Sprint AI-5 — Business Scenario Copilot.
         scenario_envelope = self._maybe_build_scenario_analysis(
             context=context, prompt=content
         )
 
-        # 3.7. Sprint AI-7 — Missing Data Intelligence. Run the
-        #      proactive missing-data detector BEFORE the
-        #      provider call so the structured rows ride the
-        #      GenerationMeta to the wire. The brief is explicit
-        #      the detection must be proactive — the assistant
-        #      must surface "What I am missing" BEFORE it
-        #      invents an answer. The detector is a pure
-        #      function over ``context`` + the classified
-        #      ``intent``; it never raises.
+        # 3.7. Sprint AI-7 — Missing Data Intelligence.
         try:
             detected_intent = classify_intent(content)
         except Exception:  # pragma: no cover — defensive
@@ -279,22 +266,13 @@ class ConversationService:
             proactive_rows = ()
 
         # 3.9. SPRINT AI-12 — Evidence Requirement Planner.
-        #      Decide what evidence the question demands BEFORE
-        #      any retrieval happens. The plan is stamped onto
-        #      ``GenerationMeta.evidence_requirements`` for the
-        #      audit trail; the prompt builder also reads it.
-        #      The function is pure (no I/O, no LLM access) and
-        #      never raises.
         try:
             qu = understand_question(content, context)
             evidence_requirements = plan_evidence_requirements(qu)
         except Exception:  # pragma: no cover — defensive
             evidence_requirements = None
 
-        # 4. Sprint 7 Part 4 — retrieve, rank, build
-        #    citations. Bind Owner_id to the assistant's
-        #    context shape so the per-business boost fires
-        #    when the layer has access to the data.
+        # 4. Sprint 7 Part 4 — retrieve, rank, build citations.
         knowledge_ctx = None
         if self._knowledge is not None:
             owner_context = self._build_owner_context(context)
@@ -303,17 +281,15 @@ class ConversationService:
                 owner_context=owner_context,
             )
 
-        # 5. Call the provider. The provider already
-        #    catches ProviderUnavailableError /
-        #    ProviderTimeoutError and falls back; any
-        #    other AIProviderError propagates so the
-        #    endpoint can surface a 502.
+        # 5. Call the provider.
         assistant_resp = self._assistant.generate(
             owner_id=owner_id,
             user_prompt=content,
             history=history,
             knowledge=knowledge_ctx,
             mode=mode,
+            context=context,
+            language=language,
         )
 
         # SPRINT AI-12 — stamp the step-3.9 evidence

@@ -1,15 +1,10 @@
 "use client";
 
 /**
- * SPRINT AI-6 — Trust-first visual UI. The collapsible
- * "secondary card" primitive used by What I found / Why /
- * Risks / Missing Information / Assumptions / Confidence.
+ * SPRINT AI-6 — Trust-first visual UI.
  *
- * The card is collapsed by default — the brief mandates
- * progressive disclosure so the user sees the Direct Answer,
- * the TrustBar, and the Top Recommendation first. Each card
- * expands via a real <button> toggle (no icon-only chevrons —
- * the summary text is the source of truth for assistive tech).
+ * Sleek collapsible "secondary card" primitive for progressive disclosure
+ * of Supporting Explanation, Findings, Actions, Risks, and Evidence.
  */
 
 import { ChevronDown, type LucideIcon } from "lucide-react";
@@ -19,7 +14,7 @@ import { cn } from "@/lib/utils";
 export interface SecondaryCardProps {
   /** Section title — shown in the toggle header. */
   title: string;
-  /** Small italic line under the title. */
+  /** Small line under the title. */
   caption?: string;
   /** Optional leading icon. aria-hidden by default. */
   icon?: LucideIcon;
@@ -47,7 +42,8 @@ export function SecondaryCard({
     <section
       data-testid={testId ?? `secondary-card-${toKebab(title)}`}
       className={cn(
-        "rounded-xl border border-border/60 bg-card/60 shadow-sm",
+        "overflow-hidden rounded-xl border border-border/60 bg-background/50 transition-colors hover:border-border",
+        open && "border-border bg-background/70 shadow-xs",
         className,
       )}
     >
@@ -56,30 +52,33 @@ export function SecondaryCard({
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
         aria-controls={`secondary-card-${toKebab(title)}-body`}
-        className="flex min-h-[44px] w-full items-center gap-2 px-3 py-2 text-left sm:px-4"
+        className="flex min-h-[40px] w-full items-center gap-2.5 px-3 py-2 text-left transition-colors sm:px-3.5"
       >
         {Icon ? (
           <span
             aria-hidden="true"
-            className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"
+            className={cn(
+              "flex size-5.5 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors",
+              open && "bg-primary/10 text-primary",
+            )}
           >
-            <Icon className="size-3.5" />
+            <Icon className="size-3" />
           </span>
         ) : null}
         <span className="flex-1 min-w-0">
-          <span className="block text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="block text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
             {title}
           </span>
           {caption ? (
-            <span className="block truncate text-xs text-muted-foreground/80">
+            <span className="block truncate text-[11px] text-muted-foreground/80">
               {caption}
             </span>
           ) : null}
         </span>
         <ChevronDown
           className={cn(
-            "size-4 shrink-0 text-muted-foreground transition-transform",
-            open ? "rotate-180" : "rotate-0",
+            "size-3.5 shrink-0 text-muted-foreground transition-transform duration-200",
+            open ? "rotate-180 text-primary" : "rotate-0",
           )}
           aria-hidden="true"
         />
@@ -87,7 +86,7 @@ export function SecondaryCard({
       {open ? (
         <div
           id={`secondary-card-${toKebab(title)}-body`}
-          className="border-t border-border/40 px-3 py-3 sm:px-4"
+          className="border-t border-border/40 px-3.5 py-3 sm:px-4 text-sm"
         >
           {children}
         </div>

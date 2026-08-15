@@ -123,9 +123,21 @@ class _HangingStubProvider:
         self.close_calls += 1
 
 
-def test_hard_timeout_constant_is_15_seconds():
-    """The committed cap is 15 s — matches the .env timeout."""
-    assert HARD_CALL_TIMEOUT_SECONDS == 15.0
+def test_hard_timeout_constant_is_at_least_15_seconds():
+    """H8.11 — the cap is no longer hard-coded at 15 s; it
+    reads from ``Settings.ai_hard_call_timeout_seconds``
+    (default 150 s). This is the documented H8.11 fix: a
+    15 s cap silently forced every grounded-mode llama3.2:3b
+    call into the deterministic fallback because the model
+    legitimately needs 25–145 s on a 5.9 GB Windows host.
+    The test now guards the *lower bound* so a future
+    regression that drops the cap below the previous value
+    is caught immediately.
+    """
+    assert HARD_CALL_TIMEOUT_SECONDS >= 15.0, (
+        f"HARD_CALL_TIMEOUT_SECONDS must be >= 15 s; "
+        f"got {HARD_CALL_TIMEOUT_SECONDS}"
+    )
 
 
 def test_call_with_hard_timeout_returns_real_response():

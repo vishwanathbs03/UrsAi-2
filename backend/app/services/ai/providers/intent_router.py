@@ -89,19 +89,27 @@ _REACH_TARGET_KEYWORDS = (
     "increase turnover", "increase revenue",
     "crore", "₹3 cr", "₹3.0 cr", "₹5 cr",
     "turnover target", "revenue target", "growth target",
-    "scale up", "grow my business",
+    "scale up", "grow my business", "current revenue", "our revenue",
+    "ಆದಾಯ", "ವಹಿವಾಟು", "ಹೆಚ್ಚಿಸುವುದು", "ಆದಾಯ ಹೆಚ್ಚಳ", "ಬೆಳೆಸುವುದು",
+    "ಟರ್ನ್‌ಓವರ್", "ಗುರಿ", "ಆದಾಯ ಎಷ್ಟು", "ಪ್ರಸ್ತುತ ಆದಾಯ", "ವಾರ್ಷಿಕ ಆದಾಯ",
+    "ಕೋಟಿ", "₹3 ಕೋಟಿ", "revenue ಎಷ್ಟು", "revenue ಎಷ್ಟಿದೆ",
 )
 _WEAKNESS_KEYWORDS = (
     "weakness", "weak", "biggest problem", "biggest issue",
-    "biggest risk", "main risk", "top risk", "what's wrong",
-    "what is wrong", "gap in my", "concern", "bottleneck",
+    "biggest risk", "biggest business risk", "main risk", "main business risk",
+    "top risk", "top business risk", "key risk", "key business risk",
+    "what's wrong", "what is wrong", "gap in my", "concern", "bottleneck",
     "failing", "stuck",
+    "ಅಪಾಯ", "ದೊಡ್ಡ ಸಮಸ್ಯೆ", "ದೌರ್ಬಲ್ಯ", "ಸಮಸ್ಯೆ", "ರಿಸ್ಕ್", "ತೊಡಕು",
+    "ನ್ಯೂನತೆ", "ಮುಖ್ಯ ಅಪಾಯ", "ವ್ಯಾಪಾರ ಅಪಾಯ", "ದೊಡ್ಡ risk", "business risk",
 )
 _SCHEMES_KEYWORDS = (
     "scheme", "schemes", "government scheme", "subsidy",
     "msme scheme", "cgtmse", "mudra", "pmegp", "nsic",
     "eligible", "eligibility", "apply for",
     "udyam", "loan scheme", "funding scheme",
+    "ಸರ್ಕಾರಿ ಯೋಜನೆ", "ಯೋಜನೆಗಳು", "ಯೋಜನೆ", "ಸಬ್ಸಿಡಿ", "ಸ್ಕೀಮ್",
+    "ಅರ್ಹತೆ", "ಸಾಲ ಯೋಜನೆ", "ಮುದ್ರಾ", "ಉದ್ಯಮ್", "scheme ಗಳು",
 )
 _ROADMAP_KEYWORDS = (
     "roadmap", "12 month", "12-month", "twelve month",
@@ -109,22 +117,22 @@ _ROADMAP_KEYWORDS = (
     "q1", "q2", "q3", "q4",
     "milestone", "plan for the year", "annual plan",
     "year plan", "phased plan",
+    "ರೋಡ್‌ಮ್ಯಾಪ್", "12 ತಿಂಗಳು", "ಹಂತಗಳು", "ಕಾರ್ಯ ಯೋಜನೆ",
+    "ವಾರ್ಷಿಕ ಯೋಜನೆ", "ಮುಂದಿನ 12 ತಿಂಗಳು",
 )
 _EXPORT_KEYWORDS = (
     "export", "exports", "international", "global market",
     "overseas", "foreign market", "ship abroad",
     "export market", "export expansion",
+    "ರಫ್ತು", "ವಿದೇಶಿ ವ್ಯಾಪಾರ", "ರಫ್ತು ವಿಸ್ತರಣೆ", "ಅಂತರರಾಷ್ಟ್ರೀಯ", "ವಿದೇಶಿ ಮಾರುಕಟ್ಟೆ",
 )
-# SPRINT AI-7 — HIRING keywords. Scoped so flagship intents win
-# on collisions ("hire someone to help me reach ₹5 Cr" is a
-# REACH_REVENUE_TARGET prompt, not HIRING). The cue words are
-# tightly written to the brief's example + common variations.
 _HIRING_KEYWORDS = (
-    "hire ", "hiring", "recruit", "recruitment",
+    "hire", "hiring", "recruit", "recruitment",
     "afford to hire", "additional payroll",
     "team expansion", "headcount",
     "first hire", "next hire",
     "new employee", "new staff",
+    "ನೇಮಕಾತಿ", "ಸಿಬ್ಬಂದಿ", "ಉದ್ಯೋಗಿ", "ಕೆಲಸಗಾರರು", "ನೌಕರರು", "ನೇಮಕ",
 )
 
 _INTENT_PRIORITY = (

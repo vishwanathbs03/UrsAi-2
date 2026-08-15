@@ -376,9 +376,10 @@ def _is_business_specific(prompt: str, context: Any) -> bool:
         return False
 
     # Possessive or first-person phrasing
-    if re.search(r"\b(my|our|i should|we should|i am|we are|me|help me)\b", text):
-        return True
-    if re.search(r"\bshould i\b", text):
+    if re.search(
+        r"\b(my|our|me|us|i should|we should|should i|should we|can i|can we|could i|could we|how can i|how can we|how do i|how do we|how should i|how should we|i am|we are|help me|help us)\b",
+        text,
+    ):
         return True
 
     # Cross-check against the existing classifier — if the
@@ -536,7 +537,7 @@ def _detect_needs_calculations(topic: Topic, prompt: str) -> tuple[str, ...]:
     """
     text = (prompt or "").lower()
     needs: list[str] = []
-    if topic == "finance" or "gap" in text or "reach" in text or "target" in text:
+    if "gap" in text or "reach" in text or "target" in text or "scale to" in text or "grow to" in text or "hit " in text or "crore" in text or "cr" in text:
         needs.append("gap_math")
     if "growth multiple" in text or "multiple" in text:
         needs.append("growth_multiple")
@@ -1464,8 +1465,12 @@ def understand_question(
     # fallback). For prompts that match multiple intents, we
     # preserve the priority order emitted by the existing
     # priority-coded scan: revenue-target > weakness > schemes
-    # > roadmap > export > general.
-    relevant = _INTENTS_BY_TOPIC.get(topic, (QuestionIntent.GENERAL,))
+    # > roadmap > export > hiring > general.
+    classified_intent = classify_intent(text)
+    if classified_intent != QuestionIntent.GENERAL:
+        relevant = (classified_intent, QuestionIntent.GENERAL)
+    else:
+        relevant = _INTENTS_BY_TOPIC.get(topic, (QuestionIntent.GENERAL,))
 
     return QuestionUnderstanding(
         literal_question=text,

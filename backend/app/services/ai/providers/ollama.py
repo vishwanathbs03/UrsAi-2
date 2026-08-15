@@ -44,6 +44,20 @@ the verifier only checks:
 
 The determinism gate (two-call byte-equality) only applies
 when the deterministic fallback is in use.
+
+KV-cache pinning
+----------------
+
+The provider pins ``options.num_ctx=512`` on every request
+as a belt-and-braces measure alongside the daemon-level
+``OLLAMA_CONTEXT_LENGTH`` env var. The default ``num_ctx`` in
+Ollama is 2048, which on a 5.9 GB host with a 4B-class model
+needs ~38 GB of system RAM for the KV cache and crashes with
+``ggml_backend_cpu_buffer_type_alloc_buffer: failed to
+allocate buffer``. Pinning to 512 keeps the cache small
+enough for memory-constrained hosts while still being long
+enough for the ~12-turn UrsBiz chat history replayed into
+the prompt.
 """
 from __future__ import annotations
 
@@ -92,11 +106,13 @@ class OllamaProvider:
         http_client: httpx.Client | None = None,
     ) -> None:
         self._base_url = (base_url or "").rstrip("/")
-        self._model = model or "llama3.1"
+        self._model = model or "llama3.2:3b"
         self._timeout = float(timeout) if timeout and timeout > 0 else 60.0
         self._owns_client = http_client is None
-        self._client = http_client or httpx.Client(timeout=self._timeout)
-        self._available: bool = False
+        self._client = http_client or httpx.Client(
+            timeout=httpx.Timeout(self._timeout, connect=1.0)
+        )
+        self._available: bool = self.ping()
 
     # ---- protocol surface ----------------------------------------------- #
 
@@ -114,6 +130,10 @@ class OllamaProvider:
             raise ProviderUnavailableError(
                 "Ollama base URL is not configured."
             )
+        if not self._available:
+            raise ProviderUnavailableError(
+                f"Ollama not reachable at {self._base_url}."
+            )
         url = f"{self._base_url}/api/generate"
         # H7.8C — mode-aware system prompt + user message.
         system = AssistantPromptBuilder.system_message(request.mode)
@@ -123,6 +143,14 @@ class OllamaProvider:
             "prompt": user,
             "system": system,
             "stream": False,
+            # Pin num_ctx to fit on memory-constrained hosts.
+            # Default num_ctx=2048 needs tens of GB of RAM for
+            # the KV cache — see the KV-cache pinning block in
+            # this module's docstring.
+            "options": {
+                "num_ctx": 1024,
+                "num_predict": 384,
+            },
         }
         # H7.8C — measure wall-clock latency for the audit log.
         started_at = datetime.now(tz=timezone.utc)
@@ -220,7 +248,7 @@ class OllamaProvider:
         try:
             response = self._client.get(
                 f"{self._base_url}/api/tags",
-                timeout=min(5.0, self._timeout),
+                timeout=min(0.5, self._timeout),
             )
         except httpx.HTTPError:
             self._available = False

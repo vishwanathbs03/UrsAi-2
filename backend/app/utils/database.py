@@ -129,7 +129,7 @@ _bootstrap_done: set[str] = set()
 # ``alembic_version`` row; a mismatch means the operator forgot
 # to run ``alembic upgrade head`` (or vice versa) and we attempt
 # to bring the DB forward.
-EXPECTED_HEAD_REVISION = "20260101_0007"
+EXPECTED_HEAD_REVISION = "20260814_0001"
 
 # Tables that must exist for the schema to be considered
 # "complete" at the head revision. The list is a strict superset

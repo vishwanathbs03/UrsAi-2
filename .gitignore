@@ -150,3 +150,10 @@ frontend/test-results/
 # unzipped into scripts/docx.txt for agent reference. They are working
 # artefacts, not product artefacts — never commit them.
 scripts/docx.txt
+
+# ----------------------- Agent / Scratch / Debug ------------------ #
+.claude/
+Aibackend
+current-working-tree.txt
+scripts/debug/
+

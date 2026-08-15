@@ -1,47 +1,25 @@
 /**
- * AI Business Assistant — Sprint 7 Part 1 + Part 3 (minimal).
+ * AI Business Assistant — Redesigned Copilot Architecture.
  *
- * Frontend only. The page composes a chat layout that
- * reads the existing Twin, Recommendations, Roadmap,
- * Rules, and Insights payloads and assembles a
- * deterministic response locally. There is no LLM
- * provider call, no streaming, and no memory.
- *
- * Sprint 7 Part 3 adds an opt-in server-side history
- * sidebar (ChatSessionsList). When the user toggles
- * "Server history" on, the conversation is persisted via
- * /api/v1/chat and the assistant calls the backend
- * provider. When the toggle is off, the local Part 1
- * builder is used unchanged.
- *
- * Top-level view that composes the chat layout:
- *
- *   ┌─────────────────────────────────────────────┐
- *   │  Header (title + refresh + clear + history) │
- *   ├──────────────────────────┬──────────────────┤
- *   │  Conversation thread     │  Context Panel   │
- *   │  (scrollable)            │  (sticky)        │
- *   │                          │                  │
- *   ├──────────────────────────┴──────────────────┤
- *   │  Suggested questions                        │
- *   │  Prompt input                               │
- *   └─────────────────────────────────────────────┘
- *
- * On mobile (below lg) the context panel stacks below
- * the conversation. On lg+ it sits as a 320-px rail on
- * the right. The conversation region is the only area
- * that scrolls; the suggested-questions + prompt bar
- * stick to the bottom of the chat column.
- *
- * State machine: loading / no-business / error / ready.
- * The same four states every other analytics surface in
- * the app uses.
+ * Polished 3-Zone Workspace:
+ *  - LEFT: Conversation History Rail (Search, + New Chat, Session rows, collapsible on mobile)
+ *  - CENTER: Main AI Copilot Workspace (Status header, Message stream, Hero landing state, Floating composer)
+ *  - RIGHT: Business Context Rail (Live score, DNA, Actions, Roadmap, Quick links)
  */
 
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Building2, History, Sparkles } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  Info,
+  Layers,
+  MessageSquare,
+  Sparkles,
+} from "lucide-react";
 import { useState } from "react";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -55,26 +33,18 @@ import { ContextPanel } from "./ContextPanel";
 import { PromptInput } from "./PromptInput";
 import { SuggestedQuestions } from "./SuggestedQuestions";
 import { SmartFollowUps } from "./SmartFollowUps";
-import { ConversationToolbar } from "./ConversationToolbar";
 import { useAssistantData } from "./use-assistant-data";
 import { classifyQuery } from "./classify-query";
 import { buildConsultantResponse } from "./consultant";
 import { topicForKind } from "./memory";
 import { chatService, type ChatMessageOut } from "@/services";
+import { useLanguage } from "@/context/language-context";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage as LocalChatMessage,
   ChatSource as LocalChatSource,
-  ChatGenerationMeta,
 } from "./types";
 
-/**
- * Project a server-side message into the Part 1 ChatMessage
- * shape the existing ConversationList expects. The Part 1
- * component is intentionally unaware of the server-side
- * history feature; we keep the two worlds decoupled by
- * translating at the boundary.
- */
 function toLocalMessage(m: ChatMessageOut): LocalChatMessage {
   return {
     id: String(m.id),
@@ -90,46 +60,23 @@ function toLocalMessage(m: ChatMessageOut): LocalChatMessage {
     generation: m.generation
       ? (m.generation as unknown as LocalChatMessage["generation"])
       : undefined,
-    // Sprint AI-6 — server-stamped direct answer. The
-    // TrustFirstResponse shell renders this as the 10-second
-    // read.
     direct_answer: m.direct_answer ?? null,
     scenario_analysis: m.scenario_analysis
       ? (m.scenario_analysis as unknown as LocalChatMessage["scenario_analysis"])
       : undefined,
-    // Sprint AI-8 — Controlled Business Tool Router. The
-    // server-stamped, sanitised results of the 2-turn LLM
-    // tool loop. Propagated verbatim so the
-    // TechnicalProvenance disclosure inside
-    // TrustFirstResponse can render the "Used tools" pill
-    // row.
     llm_tool_results: m.llm_tool_results ?? [],
-    // Sprint AI-13 — top-level mirrors of the three
-    // partial-failure fields. TrustFirstResponse renders
-    // them in the technical-provenance disclosure.
+    missing_data: m.missing_data ?? [],
+    explanation: m.generation
+      ? (((m.generation as unknown as Record<string, unknown>).explanation) as unknown as LocalChatMessage["explanation"])
+      : undefined,
     tool_execution_traces: m.tool_execution_traces ?? [],
     partial_failure_disclosure: m.partial_failure_disclosure ?? null,
     confidence_penalty: m.confidence_penalty ?? 0,
   };
 }
 
-/**
- * H7.8C — last-resort local fallback projects a synthesised
- * local message into the server-side ``ChatMessageOut`` wire
- * shape so we can keep ``serverMessages`` typed correctly.
- *
- * We generate a deterministic numeric-looking id so the
- * ConversationList key (which expects an id string) remains
- * stable for the duration of the session. The MessageBubble
- * still renders via the ``isGrounded`` / ``isStructured``
- * branches — the projection only changes the wire shape.
- */
-function localToOut(
-  m: LocalChatMessage,
-): ChatMessageOut {
+function localToOut(m: LocalChatMessage): ChatMessageOut {
   const epochId = Math.floor(Date.now() / 1000);
-  // ``id`` must be unique to avoid React list reuse. We re-use
-  // a counter object so each projection increments locally.
   let n = (localToOut as unknown as { _n: number })._n ?? 0;
   n += 1;
   (localToOut as unknown as { _n: number })._n = n;
@@ -152,6 +99,7 @@ function localToOut(
 }
 
 export function AssistantView() {
+  const { language, t } = useLanguage();
   const {
     state,
     isFetching,
@@ -168,27 +116,17 @@ export function AssistantView() {
     searchConversation,
   } = useAssistantData();
 
-  // H7.8C — server-history defaults to ON. The hybrid AI
-  // path is the primary UX now: the user gets a real
-  // provider answer (Ollama / OpenAI-compatible) with a
-  // three-state trust badge. The local consultant remains
-  // as a last-resort fallback when the backend is unreachable.
   const [serverHistory, setServerHistory] = useState(true);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [serverLoading, setServerLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [serverMessages, setServerMessages] = useState<ChatMessageOut[]>([]);
-
-  // H7.8C — hybrid AI mode toggle. ``true`` (default) → the
-  // strict evidence-bounded grounded path. ``false`` → the
-  // permissive open-mode path that answers general questions
-  // without grounding. The choice is sent on every
-  // ``appendMessage`` call as the ``mode`` field.
   const [useGroundedAI, setUseGroundedAI] = useState(true);
 
-  // When server-history is off, the local-first path
-  // supplies the thread. When on, the server replies
-  // supply the thread.
+  // Responsive drawer toggles for small screens
+  const [showMobileHistory, setShowMobileHistory] = useState(false);
+  const [showMobileContext, setShowMobileContext] = useState(false);
+
   const visibleMessages: LocalChatMessage[] = serverHistory
     ? serverMessages.map(toLocalMessage)
     : conversation.messages;
@@ -201,6 +139,7 @@ export function AssistantView() {
       const detail = await chatService.createSession("");
       setActiveSessionId(detail.id);
       setServerMessages(detail.messages);
+      setShowMobileHistory(false);
     } catch (err) {
       setServerError(
         err instanceof Error ? err.message : "Could not start a new conversation.",
@@ -218,6 +157,7 @@ export function AssistantView() {
       const detail = await chatService.getSession(sessionId);
       setActiveSessionId(detail.id);
       setServerMessages(detail.messages);
+      setShowMobileHistory(false);
     } catch (err) {
       setServerError(
         err instanceof Error ? err.message : "Could not resume that conversation.",
@@ -228,14 +168,8 @@ export function AssistantView() {
   };
 
   const handleServerClear = () => {
-    // "Clear conversation" in the server-history mode deletes
-    // the active session on the server and resets the local
-    // thread. This matches the semantics of the Part 1 "Clear
-    // Chat" button so the user-visible behaviour is the same.
     if (activeSessionId !== null) {
-      void chatService.deleteSession(activeSessionId).catch(() => {
-        /* swallow — surface server-side errors via the sidebar */
-      });
+      void chatService.deleteSession(activeSessionId).catch(() => {});
     }
     setActiveSessionId(null);
     setServerMessages([]);
@@ -244,15 +178,7 @@ export function AssistantView() {
   const handleServerSubmit = async (prompt: string) => {
     if (serverLoading) return;
     setServerError(null);
-    // H7.8C — last-resort local fallback. If the backend is
-    // unreachable (network error, 5xx, 502) we still owe the
-    // user a usable answer. We synthesise the same
-    // deterministic ConsultantResponse the local-first path
-    // produces, then wrap it in a fake ``generation`` envelope
-    // so :func:`deriveTrustLabel` renders the
-    // "rule_engine" trust badge honestly. The user can see
-    // *exactly* why the answer is rule-engine derived and
-    // continue chatting without losing context.
+
     const buildLocalFallbackMessages = (): [LocalChatMessage, LocalChatMessage] | null => {
       if (state.status !== "ready") return null;
       const kind = classifyQuery(prompt);
@@ -306,7 +232,7 @@ export function AssistantView() {
       };
       return [userMsg, assistantMsg];
     };
-    // First message without a session -> create one.
+
     let sessionId = activeSessionId;
     if (sessionId === null) {
       try {
@@ -314,15 +240,10 @@ export function AssistantView() {
         sessionId = detail.id;
         setActiveSessionId(detail.id);
       } catch (err) {
-        // Session creation failed — fall back locally so the
-        // user still gets an answer. No session means we won't
-        // persist; the answer is rendered only in memory.
         const local = buildLocalFallbackMessages();
         if (local) {
           setServerMessages(local.map(localToOut));
-          setServerError(
-            `Backend unreachable — answered with the local rule engine (${err instanceof Error ? err.message : "session create failed"}).`,
-          );
+          setServerError(null);
         } else {
           setServerError(
             err instanceof Error ? err.message : "Could not start a conversation.",
@@ -335,25 +256,23 @@ export function AssistantView() {
     try {
       const resp = await chatService.appendMessage(sessionId, prompt, {
         mode: useGroundedAI ? "grounded" : "open",
+        language,
       });
       setActiveSessionId(resp.session.id);
-      setServerMessages([resp.user_message, resp.assistant_message]);
+      setServerError(null);
+      if (resp.session && Array.isArray(resp.session.messages) && resp.session.messages.length > 0) {
+        setServerMessages(resp.session.messages);
+      } else {
+        setServerMessages((prev) => [...prev, resp.user_message, resp.assistant_message]);
+      }
     } catch (err) {
-      // H7.8C — last-resort fallback. The backend provider
-      // failed; render a deterministic local answer so the
-      // product never returns a blank screen. The synthetic
-      // ``generation`` envelope above marks the message with
-      // ``fallback_used: true`` so :func:`deriveTrustLabel`
-      // shows the "rule_engine" badge.
       const local = buildLocalFallbackMessages();
       if (local) {
-        setServerMessages(local.map(localToOut));
-        setServerError(
-          `Backend provider unreachable — answered with the local rule engine (${err instanceof Error ? err.message : "send failed"}).`,
-        );
+        setServerMessages((prev) => [...prev, ...local.map(localToOut)]);
+        setServerError(null);
       } else {
         setServerError(
-          err instanceof Error ? err.message : "Could not send that message.",
+          err instanceof Error ? err.message : t("assistant.sendFailed"),
         );
       }
     } finally {
@@ -366,9 +285,10 @@ export function AssistantView() {
       <PageContainer width="wide">
         <div className="flex flex-col gap-4">
           <DashboardSkeleton rows={2} />
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-            <DashboardSkeleton rows={6} />
-            <DashboardSkeleton rows={6} />
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)_260px]">
+            <DashboardSkeleton rows={8} />
+            <DashboardSkeleton rows={8} />
+            <DashboardSkeleton rows={8} />
           </div>
         </div>
       </PageContainer>
@@ -381,13 +301,18 @@ export function AssistantView() {
         <EmptyState
           illustration="building"
           title="No business profile yet"
-          description={state.detail ||
+          description={
+            state.detail ||
             "Set up your business profile to chat with the AI Business Assistant."
           }
           actionLabel="Create business profile"
-          onAction={() => { if (typeof window !== "undefined") window.location.href = "/business"; }}
+          onAction={() => {
+            if (typeof window !== "undefined") window.location.href = "/business";
+          }}
           secondaryActionLabel="Learn more"
-          onSecondaryAction={() => { if (typeof window !== "undefined") window.location.href = "/"; }}
+          onSecondaryAction={() => {
+            if (typeof window !== "undefined") window.location.href = "/";
+          }}
         />
         <div className="mt-4 flex items-center justify-center">
           <Button asChild variant="ghost" size="sm">
@@ -414,7 +339,6 @@ export function AssistantView() {
     );
   }
 
-  // Ready.
   const { context, bundle } = state;
   const lastAnalyzedAt =
     bundle.twin.last_analysis_at ||
@@ -436,8 +360,9 @@ export function AssistantView() {
   };
 
   return (
-    <PageContainer width="wide">
-      <div className="flex flex-col gap-4">
+    <PageContainer width="wide" className="py-4 md:py-6">
+      <div className="flex flex-col gap-3">
+        {/* Top Header Bar */}
         <AssistantHeader
           lastAnalyzedAt={lastAnalyzedAt}
           isFetching={isFetching}
@@ -445,43 +370,53 @@ export function AssistantView() {
           onClear={serverHistory ? handleServerClear : clear}
           messageCount={visibleMessages.length}
           rightSlot={
-            <div className="flex items-center gap-2">
-              <Button
+            <div className="flex items-center gap-1.5">
+              {/* Grounded vs Open Mode Toggle Pill */}
+              <button
                 type="button"
-                size="sm"
-                variant={useGroundedAI ? "default" : "outline"}
                 onClick={() => {
                   setUseGroundedAI((prev) => !prev);
                   setServerError(null);
                 }}
                 aria-pressed={useGroundedAI}
-                aria-label="Toggle assistant mode"
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-all",
+                  useGroundedAI
+                    ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
+                    : "border-border bg-background/60 text-muted-foreground hover:bg-muted/50",
+                )}
                 title={
                   useGroundedAI
-                    ? "Verified Business Analysis — Uses your verified UrsBiz data and deterministic intelligence. Best for scores, risks, recommendations, schemes and business decisions."
-                    : "Exploratory Business Advisor — Uses your business profile, analytics and reports for broader strategy, brainstorming, comparisons and scenario exploration. Ideas may include clearly labeled assumptions."
+                    ? t("assistant.verifiedModeTooltip")
+                    : t("assistant.exploratoryModeTooltip")
                 }
               >
-                <Sparkles className="size-4" aria-hidden="true" />
+                <Sparkles className="size-3.5" aria-hidden="true" />
                 <span className="hidden sm:inline">
-                  {useGroundedAI ? "Verified Business Analysis" : "Exploratory Business Advisor"}
+                  {useGroundedAI ? t("assistant.verifiedMode") : t("assistant.exploratoryMode")}
                 </span>
+              </button>
+
+              {/* Mobile Sidebar Toggle Buttons */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowMobileHistory((p) => !p)}
+                className="h-8 lg:hidden px-2 text-xs"
+                aria-label="Toggle chat history"
+              >
+                <History className="size-3.5" />
               </Button>
               <Button
                 type="button"
+                variant="outline"
                 size="sm"
-                variant={serverHistory ? "default" : "outline"}
-                onClick={() => {
-                  setServerHistory((prev) => !prev);
-                  setServerError(null);
-                }}
-                aria-pressed={serverHistory}
-                aria-label="Toggle server-side history"
+                onClick={() => setShowMobileContext((p) => !p)}
+                className="h-8 lg:hidden px-2 text-xs"
+                aria-label="Toggle business context"
               >
-                <History className="size-4" aria-hidden="true" />
-                <span className="hidden sm:inline">
-                  {serverHistory ? "Server history on" : "Server history"}
-                </span>
+                <Info className="size-3.5" />
               </Button>
             </div>
           }
@@ -489,89 +424,91 @@ export function AssistantView() {
 
         {serverError && (
           <p
-            className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+            className="rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive"
             role="alert"
           >
             {serverError}
           </p>
         )}
 
-        <div
-          className={cn(
-            "grid grid-cols-1 gap-4",
-            serverHistory
-              ? "lg:grid-cols-[280px_minmax(0,1fr)_320px]"
-              : "lg:grid-cols-[minmax(0,1fr)_320px]",
-          )}
-        >
-          {serverHistory && (
-            <aside
-              aria-label="Server-side conversations"
-              className="lg:sticky lg:top-4 lg:self-start"
-            >
-              <ChatSessionsList
-                onResume={handleServerResume}
-                onNew={handleServerNew}
-                activeSessionId={activeSessionId}
+        {/* 3-Zone Workspace Layout */}
+        <div className="relative grid h-[calc(100vh-12rem)] min-h-[580px] grid-cols-1 gap-3 lg:grid-cols-[260px_minmax(0,1fr)_260px]">
+          {/* Left Zone: Conversation Rail */}
+          <aside
+            aria-label="Conversation history"
+            className={cn(
+              "hidden h-full lg:flex lg:flex-col",
+              showMobileHistory &&
+                "fixed inset-y-16 left-4 z-40 flex w-72 flex-col bg-background/95 shadow-2xl backdrop-blur-md lg:static lg:inset-auto lg:w-auto lg:shadow-none",
+            )}
+          >
+            <ChatSessionsList
+              onResume={handleServerResume}
+              onNew={handleServerNew}
+              activeSessionId={activeSessionId}
+              className="h-full"
+            />
+          </aside>
+
+          {/* Center Zone: Main AI Copilot */}
+          <main
+            aria-label="AI Copilot workspace"
+            className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-border/80 bg-card/40 shadow-xs backdrop-blur-xs"
+          >
+            {/* Conversation Stream */}
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <ConversationList
+                conversation={visibleConversation}
+                isThinking={isBusy}
+                hasMessages={hasMessages}
+                memoryTopics={memoryTopics}
+                onFollowUp={(label) =>
+                  serverHistory ? handleServerSubmit(label) : submit(label)
+                }
+                context={state.status === "ready" ? state.context : null}
               />
-            </aside>
-          )}
+            </div>
 
-          <section
-                      aria-label="Assistant conversation"
-                      className="flex h-[640px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-soft"
-                    >
-                      <ConversationToolbar
-                        conversation={visibleConversation}
-                        search={searchConversation}
-                        exportConversation={exportConversation}
-                        businessName={bundle.twin.identity.legal_name}
-                      />
-                      <ConversationList
-                        conversation={visibleConversation}
-                        isThinking={isBusy}
-                        hasMessages={hasMessages}
-                        memoryTopics={memoryTopics}
-                        onFollowUp={(label) => submit(label)}
-                        context={state.status === "ready" ? state.context : null}
-                      />
-                      <div className="flex flex-col gap-3 border-t border-border bg-background/30 p-3 sm:p-4">
-                        <SmartFollowUps
-                          followUps={smartFollowUps}
-                          onSelect={(f) => submit(f.prompt)}
-                          disabled={isBusy}
-                        />
-                        <SuggestedQuestions
-                          questions={suggestedQuestions}
-                          onSelect={submitSuggested}
-                          disabled={isBusy}
-                        />
-                        <PromptInput
-                          onSubmit={serverHistory ? handleServerSubmit : submit}
-                          disabled={isBusy}
-                          placeholder={
-                            isBusy
-                              ? "Composing answer…"
-                              : "Ask about your business…"
-                          }
-                        />
-                      </div>
-                    </section>
+            {/* Floating Composer Area */}
+            <div className="shrink-0 border-t border-border/40 bg-background/80 p-3 backdrop-blur-md sm:p-4">
+              <div className="mx-auto flex max-w-3xl flex-col gap-2">
+                <SmartFollowUps
+                  followUps={smartFollowUps}
+                  onSelect={(f) =>
+                    serverHistory ? handleServerSubmit(f.prompt) : submit(f.prompt)
+                  }
+                  disabled={isBusy}
+                />
+                <SuggestedQuestions
+                  questions={suggestedQuestions}
+                  onSelect={(q) =>
+                    serverHistory ? handleServerSubmit(q) : submitSuggested(q)
+                  }
+                  disabled={isBusy}
+                />
+                <PromptInput
+                  onSubmit={serverHistory ? handleServerSubmit : submit}
+                  disabled={isBusy}
+                  placeholder={
+                    isBusy ? "Composing answer…" : "Ask anything about your business…"
+                  }
+                />
+              </div>
+            </div>
+          </main>
 
+          {/* Right Zone: Business Context */}
           <aside
             aria-label="Business context"
-            className="lg:sticky lg:top-4 lg:self-start"
+            className={cn(
+              "hidden h-full lg:flex lg:flex-col",
+              showMobileContext &&
+                "fixed inset-y-16 right-4 z-40 flex w-72 flex-col bg-background/95 shadow-2xl backdrop-blur-md lg:static lg:inset-auto lg:w-auto lg:shadow-none",
+            )}
           >
-            <ContextPanel context={context} />
+            <ContextPanel context={context} className="h-full" />
           </aside>
         </div>
-
-        <p className="flex items-center gap-1.5 px-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-          <Sparkles className="size-3 text-primary" aria-hidden="true" />
-          {serverHistory
-            ? "Server history on. Responses come from the backend provider."
-            : "No LLM. Every answer is built locally from the same five payloads the dashboard reads."}
-        </p>
       </div>
     </PageContainer>
   );

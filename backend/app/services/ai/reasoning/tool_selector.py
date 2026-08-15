@@ -558,50 +558,16 @@ class ToolDispatcher:
                 plan=plan, results=(), envelopes=(), traces=()
             )
 
-        # Lazy-init the shared executor.
-        global _SHARED_EXECUTOR
-        if _SHARED_EXECUTOR is None:
-            _SHARED_EXECUTOR = ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="ai1-tools"
-            )
-
         results: list[ToolResult] = []
-        futures = []
         required_names = {c.service_name for c in plan.required}
         for call in calls:
             tool = self.get_tool(call.service_name)
-            futures.append(
-                (
-                    call,
-                    _SHARED_EXECUTOR.submit(
-                        _safe_invoke,
-                        tool,
-                        owner_id=owner_id,
-                        call=call,
-                        context=context,
-                    ),
-                )
+            result = _safe_invoke(
+                tool,
+                owner_id=owner_id,
+                call=call,
+                context=context,
             )
-
-        for call, future in futures:
-            try:
-                result = future.result(timeout=_PER_CALL_TIMEOUT_MS / 1000.0)
-            except FutureTimeout:
-                result = ToolResult(
-                    service_name=call.service_name,
-                    status="error",
-                    payload=None,
-                    duration_ms=_PER_CALL_TIMEOUT_MS,
-                    error="timeout",
-                )
-            except Exception as exc:  # noqa: BLE001 — dispatcher must never raise
-                result = ToolResult(
-                    service_name=call.service_name,
-                    status="error",
-                    payload=None,
-                    duration_ms=0,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
             results.append(result)
         results_tuple = tuple(results)
 
