@@ -179,11 +179,11 @@ def _resolve_hard_call_timeout() -> float:
             getattr(
                 get_settings(),
                 "ai_hard_call_timeout_seconds",
-                45.0,
+                15.0,
             )
         )
     except Exception:  # noqa: BLE001 — defensive
-        return 45.0
+        return 15.0
 
 
 HARD_CALL_TIMEOUT_SECONDS: float = _resolve_hard_call_timeout()
