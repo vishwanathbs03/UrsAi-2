@@ -82,8 +82,12 @@ services:
     buildCommand: npm install && npm run build
     startCommand: npm run start
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=4096"
       - key: NEXT_PUBLIC_APP_NAME
         value: UrsBiz
       - key: NEXT_PUBLIC_APP_URL
