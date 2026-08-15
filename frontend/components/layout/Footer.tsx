@@ -21,7 +21,6 @@ export function Footer() {
   ];
 
   const companyLinks = [
-    { href: "/brand", label: "Brand Identity Guidelines" },
     { href: "/pitch-deck.html", label: "Pitch Deck" },
     { href: "#", label: "Privacy Policy" },
     { href: "#", label: "Terms of Service" },

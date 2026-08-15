@@ -55,7 +55,6 @@ export function Navbar({ className }: NavbarProps) {
     { href: "/advisor", label: t("nav.advisor", "Advisor"), icon: Compass },
     { href: "/reports", label: t("nav.reports"), icon: BarChart3 },
     { href: "/business", label: t("nav.business"), icon: LayoutDashboard },
-    { href: "/brand", label: "Brand Guidelines", icon: Sparkles },
   ];
 
   const isAssistantActive = isActiveLink(pathname, "/assistant");
