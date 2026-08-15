@@ -410,6 +410,7 @@ class AssistantProviderService:
         )
         dispatch_outcome: _DispatchOutcome | None = None
         adaptive_answer = None
+        chosen = provider or self._factory.build()
         try:
             question_understanding = understand_question(
                 user_prompt, context
@@ -452,13 +453,17 @@ class AssistantProviderService:
             # over ``dispatch_with_plan``; the live cutover
             # means we read plan / envelopes / traces from
             # the same outcome.
-            dispatch_outcome = self._tool_dispatcher.dispatch_with_plan(
-                owner_id=owner_id,
-                question_understanding=question_understanding,
-                reasoning_plan=reasoning_plan,
-                context=context,
-            )
-            tool_results = dispatch_outcome.results
+            if not isinstance(chosen, DeterministicFallbackProvider) and getattr(chosen, "name", "") != "deterministic-fallback":
+                dispatch_outcome = self._tool_dispatcher.dispatch_with_plan(
+                    owner_id=owner_id,
+                    question_understanding=question_understanding,
+                    reasoning_plan=reasoning_plan,
+                    context=context,
+                )
+                tool_results = dispatch_outcome.results
+            else:
+                dispatch_outcome = None
+                tool_results = ()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[service] AI-1 universal-assistant layers failed; "
