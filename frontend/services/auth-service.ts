@@ -17,7 +17,7 @@ import { env } from "@/lib/env";
 import type { AuthSuccess, UpdateActiveBusinessPayload, User } from "@/types/auth";
 
 const BASE = env.apiBaseUrl.replace(/\/+$/, "");
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 20000;
 
 class AuthServiceError extends Error {
   public readonly status: number;
