@@ -965,6 +965,7 @@ class AssistantProviderService:
         response: AssistantResponse,
         dispatch_outcome: Any | None,
         question_understanding: Any | None = None,
+        request: AssistantRequest | None = None,
     ) -> AssistantResponse:
         try:
             from app.services.ai.reasoning.ai13_dispatch_adapter import (
@@ -1345,7 +1346,10 @@ class AssistantProviderService:
         """
         if _is_deterministic(response):
             return self._stamp_ai13_onto_deterministic(
-                response, dispatch_outcome, question_understanding,
+                response,
+                dispatch_outcome,
+                question_understanding,
+                request=request,
             )
 
         registry = EvidenceRegistry(request.context)
@@ -2021,7 +2025,10 @@ class AssistantProviderService:
             )
         if _is_deterministic(response):
             return self._stamp_ai13_onto_deterministic(
-                response, dispatch_outcome, question_understanding,
+                response,
+                dispatch_outcome,
+                question_understanding,
+                request=request,
             )
 
         registry = EvidenceRegistry(request.context)
