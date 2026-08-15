@@ -55,6 +55,10 @@ from app import models as _models  # noqa: E402,F401  (registration side-effect)
 def _build_engine(url: str, echo: bool) -> Engine:
     """Build an engine with sensible per-driver settings."""
     settings = get_settings()
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
     parsed = urlparse(url)
     connect_args: dict = {}
     is_sqlite = parsed.scheme.startswith("sqlite")

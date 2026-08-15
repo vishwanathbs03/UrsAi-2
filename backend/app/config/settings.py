@@ -191,6 +191,16 @@ class Settings(BaseSettings):
     static_config_cache_ttl_seconds: int = 0
     health_response_cache_control: str = "no-store, max-age=0"
 
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, value):
+        if isinstance(value, str):
+            if value.startswith("postgres://"):
+                return value.replace("postgres://", "postgresql+psycopg2://", 1)
+            if value.startswith("postgresql://") and not value.startswith("postgresql+"):
+                return value.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return value
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _normalize_cors(cls, value):
