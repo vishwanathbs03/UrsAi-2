@@ -285,9 +285,12 @@ def _project_scores(twin: Any) -> tuple[AssistantContextScore, ...]:
 
 
 def _project_recommendations(recs: Any) -> tuple[AssistantContextRecommendation, ...]:
-    if not isinstance(recs, dict):
+    if isinstance(recs, list):
+        items = recs
+    elif isinstance(recs, dict):
+        items = recs.get("recommendations") or []
+    else:
         return ()
-    items = recs.get("recommendations") or []
     if not isinstance(items, list):
         return ()
     out: list[AssistantContextRecommendation] = []
@@ -307,9 +310,12 @@ def _project_recommendations(recs: Any) -> tuple[AssistantContextRecommendation,
 
 
 def _project_roadmap(roadmap: Any) -> tuple[AssistantContextRoadmap, ...]:
-    if not isinstance(roadmap, dict):
+    if isinstance(roadmap, list):
+        items = roadmap
+    elif isinstance(roadmap, dict):
+        items = roadmap.get("items") or []
+    else:
         return ()
-    items = roadmap.get("items") or []
     if not isinstance(items, list):
         return ()
     out: list[AssistantContextRoadmap] = []
