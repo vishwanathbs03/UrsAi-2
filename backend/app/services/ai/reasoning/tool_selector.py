@@ -558,20 +558,17 @@ class ToolDispatcher:
                 plan=plan, results=(), envelopes=(), traces=()
             )
 
+        results: list[ToolResult] = []
         required_names = {c.service_name for c in plan.required}
-        from concurrent.futures import ThreadPoolExecutor
-
-        def _invoke_single(call):
+        for call in calls:
             tool = self.get_tool(call.service_name)
-            return _safe_invoke(
+            result = _safe_invoke(
                 tool,
                 owner_id=owner_id,
                 call=call,
                 context=context,
             )
-
-        with ThreadPoolExecutor(max_workers=min(len(calls), 8)) as executor:
-            results = list(executor.map(_invoke_single, calls))
+            results.append(result)
         results_tuple = tuple(results)
 
         # Derive one envelope per result. ``envelope_from_tool_result``
